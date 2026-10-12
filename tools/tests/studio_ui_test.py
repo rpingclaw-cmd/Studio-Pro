@@ -106,6 +106,9 @@ try:
         ad = page.evaluate("document.querySelector('#engAfter').duration")
         assert 29.5 < ad < 30.5, ad
         shot(page, "06-sound-preview")
+        page.click("#engCleanBtn")  # clean the whole recording (the render re-uses it)
+        wait_text(page, "#engSoundStatus", "Sound cleaned", 900)
+        assert page.evaluate("!!STU.engClean")
         # 6b. STAGE 2: listen (voice map), a transcript, line up the owner's exact text, chapters
         page.locator("#stuAnalyse").scroll_into_view_if_needed()
         page.click("#stuAnalyse")
@@ -190,6 +193,12 @@ try:
         page.wait_for_selector("#ed:not([hidden])")
         assert page.evaluate("document.querySelector('#edScreen #stuVideo')!==null")
         time.sleep(0.5)
+        # the editor plays the cleaned recorder sound with the picture (camera sound muted)
+        assert page.evaluate("ED.recorder===true && stuVideo().muted===true"), page.evaluate("[ED.recorder, STU.engClean]")
+        st = page.evaluate("fetch(document.querySelector('#edAudio').src,{headers:{Range:'bytes=0-99'}}).then(r=>r.status+' '+r.headers.get('content-type'))")
+        assert st == "206 audio/wav", st
+        page.click("#edSndBtn"); assert page.evaluate("ED.recorder===false && stuVideo().muted===false")
+        page.click("#edSndBtn"); assert page.evaluate("ED.recorder===true")
         shot(page, "06g-editor-edit")
         tot0 = page.evaluate("edModel().total")
         page.evaluate("document.activeElement.blur();edSeek(edToEd(62))"); page.keyboard.press("Control+b")

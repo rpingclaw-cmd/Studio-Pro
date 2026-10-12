@@ -115,11 +115,11 @@ function edOpen(){
   edBuild();if(ED.open)return;ED.open=true;$('#ed').hidden=false;document.documentElement.classList.add('ed-on');
   const v=stuVideo();edPlace('#stuVideo',$('#edScreen'));v.controls=false;
   let p='edit';try{p=localStorage.getItem('edPage')||'edit'}catch(e){}
-  ED.dirty=true;if(!ED.pps)ED.needFit=true;edShowPage(p);edButtons();cancelAnimationFrame(ED.raf);ED.raf=requestAnimationFrame(edTick);
+  ED.dirty=true;if(!ED.pps)ED.needFit=true;edShowPage(p);edButtons();edAudioSrc();cancelAnimationFrame(ED.raf);ED.raf=requestAnimationFrame(edTick);
 }
 function edClose(){
   if(!ED.open)return;ED.open=false;cancelAnimationFrame(ED.raf);ED.shuttle=0;
-  const v=stuVideo();v.style.filter='';v.controls=true;edRestoreHome();
+  const v=stuVideo();v.style.filter='';v.controls=true;v.muted=false;const au=$('#edAudio');if(au)au.pause();ED.recorder=false;edRestoreHome();
   $('#ed').hidden=true;document.documentElement.classList.remove('ed-on');
 }
 function edRefresh(){ED.dirty=true;ED.drawKey='';if(!ED.open)return;edInspect();edPool();edMeters();edButtons();if(ED.pps)edZoomUi()}
@@ -136,8 +136,9 @@ function edBuild(){
   <div class="ed-body" id="edBody">
     <aside class="ed-panel ed-left" id="edLeft"></aside>
     <section class="ed-viewer"><div class="ed-vhead"><span id="edVName">Timeline viewer</span><span class="spacer"></span>
+        <button class="ed-b sm" id="edSndBtn" title="Which sound you hear while editing">Sound: camera</button>
         <button class="ed-b sm" id="edSrcBtn" title="Timeline: plays the edit and skips the cuts. Source: plays the whole recording.">Plays: edited timeline</button></div>
-      <div class="ed-screen" id="edScreen"></div>
+      <div class="ed-screen" id="edScreen"></div><audio id="edAudio" preload="auto" hidden></audio>
       <div class="ed-transport"><span class="ed-tc" id="edTc">00:00:00:00</span>
         <button class="ed-t" data-ed="start" title="Go to start (Home)">⏮</button><button class="ed-t" data-ed="prev" title="Previous edit (Up arrow)">⇤</button>
         <button class="ed-t" data-ed="rev" title="Play backwards (J)">◀◀</button><button class="ed-t" data-ed="stop" title="Stop (K)">■</button>
@@ -183,6 +184,8 @@ function edBuild(){
   d.addEventListener('click',e=>{const b=e.target.closest('[data-ed]');if(b)edAct(b.dataset.ed);const t=e.target.closest('[data-tool]');if(t)edTool(t.dataset.tool);
     const sc=e.target.closest('[data-scope]');if(sc){ED.scopeMode=sc.dataset.scope;document.querySelectorAll('[data-scope]').forEach(x=>x.classList.toggle('on',x===sc));ED.scopeAt=0}});
   $('#edSnapBtn').addEventListener('click',()=>{ED.snap=!ED.snap;$('#edSnapBtn').classList.toggle('on',ED.snap)});
+  $('#edSndBtn').addEventListener('click',()=>{if(!STU.engClean){edSay('First clean the sound: Fairlight page → “Clean the whole recording”. Then the cleaned recorder sound plays here.');return}
+    ED.hearCam=!ED.hearCam;edAudioSrc()});
   $('#edSrcBtn').addEventListener('click',()=>{ED.source=!ED.source;$('#edSrcBtn').textContent=ED.source?'Plays: whole source':'Plays: edited timeline'});
   $('#edZoom').addEventListener('input',e=>{const [lo,hi]=edZoomRange();edZoomTo(lo*Math.pow(hi/lo,+e.target.value/100),null)});
   $('#edScroll').addEventListener('input',e=>{ED.scroll=+e.target.value;ED.drawKey=''});
@@ -226,6 +229,23 @@ function edZoomUi(){const [lo,hi]=edZoomRange(),z=$('#edZoom');if(z)z.value=Stri
 const edX=t=>ED_HEAD+t*ED.pps-ED.scroll;
 const edT=x=>(x-ED_HEAD+ED.scroll)/ED.pps;
 
+/* ---------- the sound you hear: the camera's own, or the cleaned recorder sound (same timeline as the video) ---------- */
+function edAudioSrc(){
+  const a=$('#edAudio'),v=stuVideo(),b=$('#edSndBtn');if(!a||!v)return;
+  const rec=!!STU.engClean&&!ED.hearCam&&ED.open;
+  if(rec){const url=engFileUrl(STU.engClean);if(a.dataset.src!==url){a.src=url;a.dataset.src=url}v.muted=true}
+  else{a.pause();v.muted=false}
+  ED.recorder=rec;if(b){b.textContent=rec?'Sound: recorder (cleaned)':'Sound: camera';b.classList.toggle('on',rec)}
+  ED.drawKey='';
+}
+function edAudioFollow(){
+  const a=$('#edAudio'),v=stuVideo();if(!ED.recorder||!a||!v||!a.src)return;
+  if(v.paused||ED.shuttle<0){if(!a.paused)a.pause();if(Math.abs(a.currentTime-v.currentTime)>0.04)a.currentTime=v.currentTime;return}
+  if(a.playbackRate!==v.playbackRate)a.playbackRate=v.playbackRate;
+  if(Math.abs(a.currentTime-v.currentTime)>0.06)a.currentTime=v.currentTime;  // keeps lips and voice together, also after skipping cuts
+  if(a.paused)a.play().catch(()=>{});
+}
+
 /* ---------- playback loop ---------- */
 function edTick(ts){
   if(!ED.open)return;const v=stuVideo(),dt=ED.lastTs?Math.min(0.1,(ts-ED.lastTs)/1000):0;ED.lastTs=ts;
@@ -235,6 +255,7 @@ function edTick(ts){
       if(t<=0){t=0;ED.shuttle=0}v.currentTime=t}
     else if(!ED.source&&!v.paused&&M.keep.length){const t=v.currentTime;if(!M.keep.some(([s,e])=>t>=s-0.03&&t<e)){const nx=M.keep.find(([s])=>s>t);if(nx)v.currentTime=nx[0];else v.pause()}}
     $('#edPlay').textContent=v.paused&&ED.shuttle>=0?'▶':'❚❚';
+    edAudioFollow();
   }
   const now=edNow();$('#edTc').textContent=edTc(now);$('#edDur').textContent='/ '+edTc(edModel().total);
   if(v&&!v.paused&&ED.pps){const x=edX(now),w=edW();if(x>w-30||x<ED_HEAD){ED.scroll=Math.max(0,now*ED.pps-(w-ED_HEAD)*0.25);edZoomUi()}}
@@ -273,7 +294,8 @@ function edDraw(){
   // tracks
   let y=ED_RULER;const T={};
   for(const tr of edTracks()){T[tr.id]={y,h:tr.h};g.fillStyle='#252529';g.fillRect(0,y,ED_HEAD,tr.h);g.fillStyle='#19191c';g.fillRect(ED_HEAD,y,w-ED_HEAD,tr.h);
-    g.fillStyle='#d0d0d6';g.font='600 11px system-ui,Segoe UI,sans-serif';g.fillText(tr.name,8,y+tr.h/2-(tr.h>30?6:0));g.font='10px system-ui,Segoe UI,sans-serif';g.fillStyle='#8a8a94';if(tr.h>30)g.fillText(tr.sub,8,y+tr.h/2+8);else g.fillText(tr.sub,28,y+tr.h/2);
+    const sub=tr.id==='A1'?(ED.recorder?'Recorder':STU.settings.separate?'Camera':'Voice'):tr.sub;
+    g.fillStyle='#d0d0d6';g.font='600 11px system-ui,Segoe UI,sans-serif';g.fillText(tr.name,8,y+tr.h/2-(tr.h>30?6:0));g.font='10px system-ui,Segoe UI,sans-serif';g.fillStyle=tr.id==='A1'&&ED.recorder?'#7fd3a2':'#8a8a94';if(tr.h>30)g.fillText(sub,8,y+tr.h/2+8);else g.fillText(sub,28,y+tr.h/2);
     g.fillStyle='#0f0f11';g.fillRect(0,y+tr.h-1,w,1);y+=tr.h}
   g.fillStyle='#0f0f11';g.fillRect(ED_HEAD-1,0,1,h);
   g.save();g.beginPath();g.rect(ED_HEAD,0,w-ED_HEAD,h);g.clip();

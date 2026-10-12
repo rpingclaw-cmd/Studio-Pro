@@ -164,7 +164,7 @@ async function engPreview(){
 }
 async function engClean(){
   if(!engNeed(true))return;stuSay('#engSoundStatus','Cleaning the whole recording (see progress above)…');
-  try{const r=await engRun('clean',engParams());stuSay('#engSoundStatus',r.message)}catch(e){stuSay('#engSoundStatus',e.message)}
+  try{const r=await engRun('clean',engParams());STU.engClean=r.clean_audio||null;stuSave();if(typeof edAudioSrc==='function')edAudioSrc();stuSay('#engSoundStatus',r.message+(window.studioApp?' You can now hear it in the Editor (Sound: Recorder).':''))}catch(e){stuSay('#engSoundStatus',e.message)}
 }
 
 /* ---------- step 8: render + quality check ---------- */

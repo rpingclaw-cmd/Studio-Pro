@@ -327,11 +327,14 @@ def main():
         if not args.no_browser:
             open_site(link)
         return
-    print("=" * 64)
-    print(f"  Studio Engine {VERSION} is running.  Keep this window open while you work.")
-    print("  Close this window to stop it.")
-    print(f"  If the Studio tab says 'not paired', open this link:\n  {link}")
-    print("=" * 64, flush=True)
+    if args.app:
+        print(f"Studio Engine {VERSION} running for Studio Pro on 127.0.0.1:{args.port}", flush=True)
+    else:
+        print("=" * 64)
+        print(f"  Studio Engine {VERSION} is running.  Keep this window open while you work.")
+        print("  Close this window to stop it.")
+        print(f"  If the Studio tab says 'not paired', open this link:\n  {link}")
+        print("=" * 64, flush=True)
     manager()
     if not args.no_browser:
         open_site(link)

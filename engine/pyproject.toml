@@ -1,0 +1,28 @@
+[project]
+name = "studio-engine"
+version = "1.0.0"
+description = "Studio Engine: the local helper for the Daily Quote Cards Studio tab (runs on your own computer)."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.143,<1",
+    "uvicorn>=0.54,<1",
+    "numpy>=2.3,<3",
+    "onnxruntime>=1.20,<2",
+    "opencv-python-headless>=4.10,<6",
+]
+
+[project.scripts]
+studio-engine = "studio_engine.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["studio_engine"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "httpx>=0.27",
+]

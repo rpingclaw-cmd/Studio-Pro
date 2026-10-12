@@ -1,0 +1,13 @@
+node_modules/
+desktop/dist/
+desktop/build/python/
+desktop/build/bin/
+desktop/build/requirements.txt
+engine/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+*.log
+.env
+.dev.vars

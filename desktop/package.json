@@ -1,0 +1,95 @@
+{
+  "name": "studio-pro",
+  "productName": "Studio Pro",
+  "version": "0.1.0",
+  "description": "Studio Pro \u2014 desktop video editor for talks and podcasts",
+  "author": "rpingclaw-cmd",
+  "license": "GPL-3.0-or-later",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "runtime": "python3 ../tools/bundle_runtime.py",
+    "dist:win": "electron-builder --win nsis --publish never",
+    "dist:linux": "electron-builder --linux AppImage --publish never",
+    "dist:mac": "electron-builder --mac dmg --publish never"
+  },
+  "devDependencies": {
+    "electron": "44.7.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "org.divinelightmeditation.studiopro",
+    "productName": "Studio Pro",
+    "copyright": "Studio Pro contributors \u2014 GPL-3.0",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../ui",
+        "to": "ui"
+      },
+      {
+        "from": "../engine/studio_engine",
+        "to": "engine/studio_engine",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**"
+        ]
+      },
+      {
+        "from": "build/python",
+        "to": "python"
+      },
+      {
+        "from": "build/bin",
+        "to": "bin"
+      }
+    ],
+    "asar": true,
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Studio Pro",
+      "artifactName": "Studio-Pro-Setup-${version}.exe"
+    },
+    "linux": {
+      "target": "AppImage",
+      "category": "AudioVideo",
+      "icon": "build/icon.png",
+      "artifactName": "Studio-Pro-${version}.AppImage"
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.video",
+      "icon": "build/icon.png",
+      "artifactName": "Studio-Pro-${version}.dmg"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "rpingclaw-cmd",
+        "repo": "Studio-Pro"
+      }
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rpingclaw-cmd/Studio-Pro.git"
+  },
+  "homepage": "https://github.com/rpingclaw-cmd/Studio-Pro"
+}

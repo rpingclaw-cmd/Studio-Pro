@@ -1,0 +1,45 @@
+name: Model files
+
+# Keeps copies of the speech-recognition models (MIT licence) as assets of the "models-v1" release, so the
+# app downloads them from this repository. Run again only when the list below changes.
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/models.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  models:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Download from Hugging Face
+        run: |
+          pip install -q "huggingface_hub>=0.24"
+          python - <<'EOF'
+          import os, shutil
+          from huggingface_hub import snapshot_download
+          models = {
+              "whisper-base": "Systran/faster-whisper-base",
+              "whisper-small": "Systran/faster-whisper-small",
+              "whisper-large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+          }
+          os.makedirs("out", exist_ok=True)
+          for name, repo in models.items():
+              d = snapshot_download(repo, local_dir=f"m/{name}", allow_patterns=["*.json", "*.bin", "*.txt", "*.model", "LICENSE*", "README*"])
+              shutil.make_archive(f"out/{name}", "zip", d)
+              print(name, os.path.getsize(f"out/{name}.zip"))
+          EOF
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: models-v1
+          name: Model files (v1)
+          prerelease: true
+          make_latest: false
+          files: out/*.zip
+          body: |
+            Speech-recognition models used by Studio Pro (downloaded by the app when needed).
+            faster-whisper conversions (Systran, mobiuslabs) of OpenAI Whisper — MIT licence.

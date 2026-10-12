@@ -24,13 +24,23 @@ const say = (t) => log.write(`[${new Date().toISOString()}] ${t}\n`);
 if (!app.requestSingleInstanceLock()) app.quit();
 app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
 
-function freePort() {
-  return new Promise((resolve, reject) => {
+function tryPort(want) {
+  return new Promise((resolve) => {
     const s = net.createServer();
     s.unref();
-    s.on('error', reject);
-    s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); });
+    s.on('error', () => resolve(0));
+    s.listen(want, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); });
   });
+}
+/** The page keeps the user's work (chosen files, cuts, settings) in browser storage, which belongs to its address.
+ *  So use the same port every time - otherwise each start would begin empty. Another free port only if all are busy. */
+const HOME_PORTS = [47321, 47322, 47323, 47324, 47325];
+async function freePort() {
+  for (const p of HOME_PORTS) { const got = await tryPort(p); if (got) return got; }
+  const any = await tryPort(0);
+  if (!any) throw new Error('No free network port for the Studio Engine.');
+  say('all home ports busy - saved work will not show in this window');
+  return any;
 }
 
 /** The Python that runs the engine: the bundled one in the installed app, `uv` while developing. */

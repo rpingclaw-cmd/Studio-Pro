@@ -47,6 +47,12 @@ jobs:
         with: { node-version: 22 }
       - name: Bundle Python, FFmpeg 8.1 and DeepFilterNet
         run: python tools/bundle_runtime.py
+      - name: A speaking voice for the test talks (espeak-ng)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://github.com/espeak-ng/espeak-ng/releases/download/1.52.0/espeak-ng.msi -OutFile espeak-ng.msi
+          Start-Process msiexec.exe -ArgumentList '/i', 'espeak-ng.msi', '/qn' -Wait
+          "C:\Program Files\eSpeak NG" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Engine tests on Windows (with the bundled tools)
         working-directory: engine
         env:

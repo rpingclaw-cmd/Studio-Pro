@@ -4,9 +4,16 @@ The model downloads once from this project's release (or set STUDIO_MODELS_DIR t
 import difflib
 import re
 
+import pytest
+
 import numpy as np
 
 from .conftest import params, run
+
+
+def need_voice(media):
+    if not media.get("script"):  # synthetic "speech-like" sound has no real words to recognise
+        pytest.skip("needs espeak-ng (a speaking voice) to make a test talk with real words")
 
 
 def toks(ws):
@@ -14,6 +21,7 @@ def toks(ws):
 
 
 def test_transcribe_words_and_timeline(eng, media, synced):
+    need_voice(media)
     rec = run(eng, "transcribe", params(media, synced, quality="fast", language="en"), timeout=1800)
     cam = run(eng, "transcribe", {"video": media["video"], "quality": "fast", "language": "en", "source": "camera"},
               timeout=1800)
@@ -35,8 +43,9 @@ def test_transcribe_words_and_timeline(eng, media, synced):
     assert again["words"] == rec["words"]  # done once, then re-used
 
 
-def test_sync_words_agree(synced):
+def test_sync_words_agree(media, synced):
     """The normal sync also checks the words at 3 points (same sentences heard at the same moment)."""
+    need_voice(media)
     w = synced.get("words") or {}
     assert w.get("checked") == 3 and w.get("agree") == 3, w
     assert "Words agree at 3 of 3 points" in synced["message"]
@@ -47,6 +56,7 @@ def test_sync_words_agree(synced):
 def test_sync_from_words_when_sound_pattern_fails(eng, media, prepared, monkeypatch):
     """Backup: if the loudness patterns can't be matched, the words find the sync, then the exact sound
     comparison fine-tunes it (< 5 ms at start, middle and end)."""
+    need_voice(media)
     from studio_engine import syncer
     from studio_engine.jobs import JobError
 

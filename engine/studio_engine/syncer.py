@@ -169,17 +169,21 @@ def word_check(ctx: Ctx | None, vpath, apath, res: dict, quality: str = "fast", 
         if ctx:
             ctx.check()
             ctx.progress(0.7 + 0.1 * k, f"Checking the words at 3 points ({k + 1} of 3)…")
-        tv = lo + (hi - lo) * f
-        cam = _words(ctx, vpath, tv, WORD_WIN, quality, language)
-        rec = _words(ctx, apath, a + b * tv - 3, WORD_WIN + 6, quality, language)
-        for w in rec:
-            w["s"] = (w["s"] - a) / b
-        pairs = _match_times(cam, rec)
-        if len(pairs) >= 4:
-            d = np.array([r - c for c, r in pairs])
-            pts.append({"tv": round(tv, 1), "words": len(pairs), "of": len(cam), "err_ms": round(float(np.median(d)) * 1000, 1)})
-        else:
-            pts.append({"tv": round(tv, 1), "words": len(pairs), "of": len(cam), "err_ms": None})
+        t0 = lo + (hi - lo) * f
+        # if the words of this passage cannot be matched (the recogniser sometimes hears nothing usable in one of the
+        # two copies), look a little further on before calling it a disagreement
+        for tv in (t0, min(hi, t0 + WORD_WIN / 2), max(lo, t0 - WORD_WIN / 2)):
+            cam = _words(ctx, vpath, tv, WORD_WIN, quality, language)
+            rec = _words(ctx, apath, a + b * tv - 3, WORD_WIN + 6, quality, language)
+            for w in rec:
+                w["s"] = (w["s"] - a) / b
+            pairs = _match_times(cam, rec)
+            if len(pairs) >= 4:
+                d = np.array([r - c for c, r in pairs])
+                pt = {"tv": round(tv, 1), "words": len(pairs), "of": len(cam), "err_ms": round(float(np.median(d)) * 1000, 1)}
+                break
+            pt = {"tv": round(t0, 1), "words": len(pairs), "of": len(cam), "err_ms": None}
+        pts.append(pt)
     ok = [p for p in pts if p["err_ms"] is not None and abs(p["err_ms"]) < 120]
     return {"checked": len(pts), "agree": len(ok), "points": pts}
 

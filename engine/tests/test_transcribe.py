@@ -69,3 +69,25 @@ def test_sync_from_words_when_sound_pattern_fails(eng, media, prepared, monkeypa
     for tv in (5.0, media["video_s"] / 2, media["video_s"] - 8):
         err = abs((r["a"] + r["b"] * tv) - (A + B * tv)) * 1000
         assert err < 5, f"word-based sync off by {err:.1f} ms at {tv}s: {r}"
+
+
+def test_word_check_looks_further_when_a_passage_cannot_be_matched(eng, media, prepared, monkeypatch):
+    """Seen on Windows: at one point the recogniser heard nothing usable in the recorder copy. That point is checked
+    again a little further on instead of counting as a disagreement."""
+    from studio_engine import models, syncer
+    monkeypatch.setattr(models, "whisper_model", lambda *a, **k: None)
+    a, b = 3.0, 1.0
+    text = "the light of the heart flows through every moment of the day".split()
+    calls = {"rec": 0}
+
+    def fake_words(ctx, path, start, dur, quality, language):
+        if path == prepared["audio_wav"]:
+            calls["rec"] += 1
+            if calls["rec"] == 1:
+                return []  # the first recorder passage: nothing heard
+        t, shift = max(0.0, start), (a if path == prepared["audio_wav"] else 0.0)  # same words, recorder clock a s ahead
+        return [{"w": f"{text[int(t + k - shift) % len(text)]}{int(t + k - shift)}", "s": t + k}
+                for k in range(int(dur))]
+    monkeypatch.setattr(syncer, "_words", fake_words)
+    r = syncer.word_check(None, prepared["video_wav"], prepared["audio_wav"], {"a": a, "b": b})
+    assert r["checked"] == 3 and r["agree"] == 3, r

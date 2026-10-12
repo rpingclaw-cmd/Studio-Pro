@@ -19,8 +19,19 @@ def _file_url(p: Path) -> str:
     return "file://" + quote(s, safe="/:")
 
 
+def split_picture(segs: list, src_frames: int) -> list[tuple[int, int, bool]]:
+    """Kept parts split where the camera was not running (frames < 0 or >= src_frames): (a, b, has_picture)."""
+    out = []
+    for a, b in segs:
+        for lo, hi, pic in ((a, min(b, 0), False), (max(a, 0), min(b, src_frames), True), (max(a, src_frames), b, False)):
+            if hi > lo:
+                out.append((lo, hi, pic))
+    return out
+
+
 def fcpxml(video: Path, clean: Path | None, segs: list, fr: Fraction, src_w: int, src_h: int, src_frames: int,
-           out_w: int, out_h: int, name: str = "Edited talk", chapters: list | None = None) -> str:
+           out_w: int, out_h: int, name: str = "Edited talk", chapters: list | None = None, pre_f: int = 0,
+           post_f: int = 0) -> str:
     """Final Cut Pro XML 1.9 (DaVinci Resolve: File > Import > Timeline). Every kept part is a clip of the
     original video; the cleaned sound (already in sync with the video) is attached under each clip and the
     camera sound is muted."""
@@ -32,21 +43,31 @@ def fcpxml(video: Path, clean: Path | None, segs: list, fr: Fraction, src_w: int
         t, off = int(round(c["t"] * fr)), 0
         for i, (a, b) in enumerate(segs):
             if off <= t < off + (b - a) or i == len(segs) - 1:
-                pos = a + min(max(0, t - off), b - a - 1)
+                pos = min(max(0, a + min(max(0, t - off), b - a - 1)), src_frames - 1)
                 marks.setdefault(i, []).append(f'<marker start="{_rt(pos, fr)}" duration="{fd}" value="{escape(c["title"])}"/>')
                 break
             off += b - a
     clips = []
     off = 0
     for i, (a, b) in enumerate(segs):
-        n = b - a
-        audio = (f'<asset-clip ref="r4" lane="-1" offset="{_rt(a, fr)}" start="{_rt(a, fr)}" duration="{_rt(n, fr)}" '
-                 f'name="Cleaned sound" audioRole="dialogue"/>' if clean else "")
-        clips.append(f'      <asset-clip ref="r3" offset="{_rt(off, fr)}" start="{_rt(a, fr)}" duration="{_rt(n, fr)}" '
-                     f'name="Part {i + 1}" tcFormat="NDF"><adjust-volume amount="-96dB"/>{audio}'
-                     f'{"".join(marks.get(i, []))}</asset-clip>')
-        off += n
-    clean_asset = (f'    <asset id="r4" name="{escape(clean.stem)}" start="0s" duration="{_rt(src_frames, fr)}" hasAudio="1" '
+        first = True
+        for lo, hi, pic in split_picture([(a, b)], src_frames):
+            n = hi - lo
+            if pic:  # the camera picture, with the cleaned sound under it (the cleaned file starts at video time -pre)
+                audio = (f'<asset-clip ref="r4" lane="-1" offset="{_rt(lo, fr)}" start="{_rt(lo + pre_f, fr)}" '
+                         f'duration="{_rt(n, fr)}" name="Cleaned sound" audioRole="dialogue"/>' if clean else "")
+                clips.append(f'      <asset-clip ref="r3" offset="{_rt(off, fr)}" start="{_rt(lo, fr)}" duration="{_rt(n, fr)}" '
+                             f'name="Part {i + 1}" tcFormat="NDF"><adjust-volume amount="-96dB"/>{audio}'
+                             f'{"".join(marks.get(i, [])) if first else ""}</asset-clip>')
+                first = False
+            else:  # only the recorder was running: a gap for a cover picture; the sound continues
+                audio = (f'<asset-clip ref="r4" lane="-1" offset="0s" start="{_rt(lo + pre_f, fr)}" '
+                         f'duration="{_rt(n, fr)}" name="Cleaned sound" audioRole="dialogue"/>' if clean else "")
+                clips.append(f'      <gap name="No camera picture (cover)" offset="{_rt(off, fr)}" '
+                             f'duration="{_rt(n, fr)}">{audio}</gap>')
+            off += n
+    clean_frames = src_frames + pre_f + post_f
+    clean_asset = (f'    <asset id="r4" name="{escape(clean.stem)}" start="0s" duration="{_rt(clean_frames, fr)}" hasAudio="1" '
                    f'audioSources="1" audioChannels="2" audioRate="48000"><media-rep kind="original-media" '
                    f'src="{_file_url(clean)}"/></asset>\n') if clean else ""
     spine = "\n".join(clips)
@@ -90,16 +111,22 @@ def _tc(frames: int, fps: int) -> str:
     return f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}:{f:02d}"
 
 
-def edl(video: Path, segs: list, fr: Fraction, title: str = "EDITED TALK") -> str:
-    """CMX 3600 cut list (video + audio), source timecode from 00:00:00:00."""
+def edl(video: Path, segs: list, fr: Fraction, title: str = "EDITED TALK", src_frames: int | None = None) -> str:
+    """CMX 3600 cut list (video + audio), source timecode from 00:00:00:00. Stretches with no camera picture
+    (whole recording kept) are black ('BL') events."""
     fps = int(round(float(fr)))
     lines = [f"TITLE: {title}", "FCM: NON-DROP FRAME", ""]
     rec = 0
     reel = re.sub(r"[^A-Za-z0-9]", "", video.stem)[:8].upper() or "AX"
-    for i, (a, b) in enumerate(segs):
+    parts = split_picture(segs, src_frames if src_frames is not None else max(b for _, b in segs))
+    for i, (a, b, pic) in enumerate(parts):
         n = b - a
-        lines.append(f"{i + 1:03d}  {reel:<8} AA/V  C        {_tc(a, fps)} {_tc(b, fps)} {_tc(rec, fps)} {_tc(rec + n, fps)}")
-        lines.append(f"* FROM CLIP NAME: {video.name}")
+        if pic:
+            lines.append(f"{i + 1:03d}  {reel:<8} AA/V  C        {_tc(a, fps)} {_tc(b, fps)} {_tc(rec, fps)} {_tc(rec + n, fps)}")
+            lines.append(f"* FROM CLIP NAME: {video.name}")
+        else:
+            lines.append(f"{i + 1:03d}  BL       V     C        {_tc(0, fps)} {_tc(n, fps)} {_tc(rec, fps)} {_tc(rec + n, fps)}")
+            lines.append("* NO CAMERA PICTURE HERE (COVER)")
         lines.append("")
         rec += n
     return "\n".join(lines) + "\n"

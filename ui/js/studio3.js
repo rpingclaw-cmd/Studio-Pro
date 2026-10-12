@@ -28,27 +28,33 @@ function makeAssWords(segs,opt={}){
 }
 
 /* ---------- settings ---------- */
-const PIC_DEFAULTS={layout:'crop169',punch:1.18,capStyle:'gold',capUpper:false,colour:{auto:true,brightness:0,contrast:1,saturation:1,warmth:0}};
-function pic(){const p=STU.settings.pic||{};return {...PIC_DEFAULTS,...p,colour:{...PIC_DEFAULTS.colour,...(p.colour||{})}}}
+const PIC_DEFAULTS={layout:'crop169',punch:1.18,cutStyle:'punch',capStyle:'gold',capUpper:false,colour:{auto:true,brightness:0,contrast:1,saturation:1,warmth:0},bg:{mode:'none',colour:'#1e2a36',file:''},rect:null};
+function pic(){const p=STU.settings.pic||{};return {...PIC_DEFAULTS,...p,colour:{...PIC_DEFAULTS.colour,...(p.colour||{})},bg:{...PIC_DEFAULTS.bg,...(p.bg||{})}}}
 const parseTime=s=>{s=String(s||'').trim();if(!s)return NaN;const p=s.split(':').map(Number);if(p.some(isNaN))return NaN;return p.reduce((a,x)=>a*60+x,0)};
 const showTime=t=>{t=Math.max(0,Math.round(t));return Math.floor(t/60)+':'+String(t%60).padStart(2,'0')};
-function picOverrides(){return (STU.frames||[]).filter(f=>f.end>f.start).map(f=>({start:f.start,end:f.end,...(f.zoom!=='auto'?{zoom:+f.zoom}:{}),...(f.hold?{hold:true}:{})}))}
-function picRenderSettings(){const p=pic();return {layout:p.layout,punch:+p.punch,reelPunch:+p.punch>1?1.12:1,colour:p.colour,framing_overrides:picOverrides()}}
+function picOverrides(){return (STU.frames||[]).filter(f=>f.end>f.start).map(f=>({start:f.start,end:f.end,...(f.zoom!=='auto'&&f.zoom!=='box'?{zoom:+f.zoom}:{}),...(f.hold?{hold:true}:{}),...(f.rect?{rect:f.rect}:{}),...(f.kb?{kb:+f.kb}:{})}))}
+function picRenderSettings(){const p=pic(),punch=p.cutStyle==='punch'?+p.punch:1;return {layout:p.layout,punch,cut_style:p.cutStyle,reelPunch:+p.punch>1?1.12:1,colour:p.colour,framing_overrides:picOverrides(),rect:p.rect||null,background:p.bg.mode!=='none'?{mode:p.bg.mode,colour:p.bg.colour,file:p.bg.file||null}:null}}
 function picCovers(){return (STU.covers||[]).filter(c=>c.end>c.start).map(c=>({start:c.start,end:c.end,mode:c.mode,file:c.file||null,title:c.title||'',from:c.from??null}))}
 function picReelAss(segs){const p=pic();return p.capStyle==='simple'?makeAss(segs):makeAssWords(segs,{style:p.capStyle,upper:p.capUpper})}
 
 /* ---------- UI ---------- */
 function picUi(){
-  const p=pic();$('#pic_layout').value=p.layout;$('#pic_punch').value=String(p.punch);$('#pic_auto').checked=p.colour.auto;
+  const p=pic();$('#pic_layout').value=p.layout;$('#pic_punch').value=String(p.punch);$('#pic_cutStyle').value=p.cutStyle;$('#picPunchRow').hidden=p.cutStyle!=='punch';$('#pic_auto').checked=p.colour.auto;
   ['brightness','contrast','saturation','warmth'].forEach(k=>{$('#pic_'+k).value=p.colour[k];$('#pic_'+k+'Val').textContent=(k==='brightness'||k==='warmth'?(p.colour[k]>0?'+':''):'')+(+p.colour[k]).toFixed(2)});
   $('#pic_capStyle').value=p.capStyle;$('#pic_capUpper').checked=p.capUpper;
+  $('#pic_bgMode').value=p.bg.mode;$('#pic_bgColour').value=p.bg.colour;$('#picBgColourRow').hidden=p.bg.mode!=='colour';$('#picBgFileRow').hidden=p.bg.mode!=='image';
+  $('#picBgFile').textContent=p.bg.file?baseName(p.bg.file):'nothing chosen';
+  if(STU.matteNote)stuSay('#picMatteStatus',STU.matteNote);else stuSay('#picMatteStatus',p.bg.mode!=='none'?'Press “Find the person” once — it takes a while (it looks at every frame).':'');
+  stuSay('#picRectStatus',p.rect?`Your box: ${Math.round(p.rect.w*100)}% of the width, from ${Math.round(p.rect.x*100)}% across and ${Math.round(p.rect.y*100)}% down.`:'Automatic framing.');
   $('#picOn').hidden=!ENG.on;$('#picOff').hidden=ENG.on;
   if(STU.facesPct!=null)stuSay('#picFacesStatus',`Speaker found: face visible in ${STU.facesPct}% of the video ✓`);
   picCoversRender();
 }
 function picSave(){
-  const c={auto:$('#pic_auto').checked};['brightness','contrast','saturation','warmth'].forEach(k=>c[k]=+$('#pic_'+k).value);
-  STU.settings.pic={layout:$('#pic_layout').value,punch:+$('#pic_punch').value,capStyle:$('#pic_capStyle').value,capUpper:$('#pic_capUpper').checked,colour:c};
+  const old=pic();
+  const c={...old.colour,auto:$('#pic_auto').checked};['brightness','contrast','saturation','warmth'].forEach(k=>c[k]=+$('#pic_'+k).value);  // (keeps wheels, look, LUT)
+  STU.settings.pic={...old,layout:$('#pic_layout').value,punch:+$('#pic_punch').value,cutStyle:$('#pic_cutStyle').value,capStyle:$('#pic_capStyle').value,capUpper:$('#pic_capUpper').checked,colour:c,
+    bg:{mode:$('#pic_bgMode').value,colour:$('#pic_bgColour').value,file:old.bg.file},rect:old.rect};
   stuSave();picUi();
 }
 function picCoversRender(){
@@ -65,7 +71,7 @@ function picFramesRender(){
   $('#picFrames').innerHTML=fs.map((f,i)=>`<div class="cover-row">
     <input data-fr="${i}" data-k="start" value="${showTime(f.start)}" aria-label="From (m:ss)" title="From (m:ss)">
     <input data-fr="${i}" data-k="end" value="${showTime(f.end)}" aria-label="To (m:ss)" title="To (m:ss)">
-    <select data-fr="${i}" data-k="zoom"><option value="auto"${f.zoom==='auto'?' selected':''}>Automatic</option><option value="1"${f.zoom==='1'?' selected':''}>Wide (no close-up)</option><option value="1.18"${f.zoom==='1.18'?' selected':''}>Close-up</option><option value="1.3"${f.zoom==='1.3'?' selected':''}>Tight close-up</option></select>
+    <select data-fr="${i}" data-k="zoom"><option value="auto"${f.zoom==='auto'?' selected':''}>Automatic</option><option value="1"${f.zoom==='1'?' selected':''}>Wide (no close-up)</option><option value="1.18"${f.zoom==='1.18'?' selected':''}>Close-up</option><option value="1.3"${f.zoom==='1.3'?' selected':''}>Tight close-up</option>${f.rect?`<option value="box" selected>My own box</option>`:''}</select>
     <button class="btn small" data-frdel="${i}" title="Remove">✕</button>
     <div class="cover-extra"><label class="check" style="margin:0"><input type="checkbox" data-fr="${i}" data-k="hold"${f.hold?' checked':''}> Hold the camera still in this section</label></div></div>`).join('')||'<p class="status">Nothing set by hand.</p>';
 }
@@ -78,7 +84,14 @@ function picInit(){
     if(f.end<=f.start)stuSay('#picStatus',`Section ${+i+1}: the end must be after the start.`);stuSave();setTimeout(picFramesRender,0)});
   $('#picFrames').addEventListener('click',e=>{const b=e.target.closest('button');if(b&&b.dataset.frdel!=null){STU.frames.splice(+b.dataset.frdel,1);stuSave();picFramesRender()}});
   STU.settings.pic=pic();picUi();
-  ['pic_layout','pic_punch','pic_auto','pic_capStyle','pic_capUpper'].forEach(id=>$('#'+id).addEventListener('change',picSave));
+  ['pic_layout','pic_punch','pic_cutStyle','pic_auto','pic_capStyle','pic_capUpper','pic_bgMode','pic_bgColour'].forEach(id=>$('#'+id).addEventListener('change',picSave));
+  $('#picBgPick').addEventListener('click',async()=>{try{const d=await engChoose('cover');if(d.path){const p=pic();STU.settings.pic={...p,bg:{...p.bg,file:d.path}};stuSave();picUi()}}catch(e){alert(e.message)}});
+  $('#picMatte').addEventListener('click',async()=>{
+    if(!engNeed())return;if(!STU.engPrep){alert('Press “Prepare” in step 1 first.');return}
+    stuSay('#picMatteStatus','Finding the person in every frame (see progress at the top)…');
+    try{const r=await engRun('matte',{video:STU.engVideo});STU.matteNote=r.message;stuSave();stuSay('#picMatteStatus',r.message);if(r.person_pct<3)alert('Hardly any person was found in this video, so changing the background will not look right. Use “Keep the real background”, or check that the speaker is clearly visible.')}catch(e){stuSay('#picMatteStatus',e.message)}});
+  $('#picRectDraw').addEventListener('click',()=>{if(typeof edOpen==='function'){edOpen();edShowPage('color');edFrameEdit('video')}});
+  $('#picRectAuto').addEventListener('click',()=>{STU.settings.pic={...pic(),rect:null};stuSave();picUi();if(typeof edFramePreview==='function')edFramePreview()});
   ['brightness','contrast','saturation','warmth'].forEach(k=>$('#pic_'+k).addEventListener('input',picSave));
   $('#picReset').addEventListener('click',()=>{STU.settings.pic={...pic(),colour:{...PIC_DEFAULTS.colour}};stuSave();picUi()});
   $('#picFaces').addEventListener('click',async()=>{

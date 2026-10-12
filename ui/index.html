@@ -72,6 +72,15 @@
         <div class="under" style="margin:0 0 6px"><button class="btn small primary" id="stuSync">Find sync automatically</button></div>
         <p class="status" id="stuSyncOut"></p>
         <label class="f" style="max-width:280px"><span>Offset in milliseconds (adjust if lips look early/late)</span><input type="number" id="stuOffset" step="10"></label>
+        <div id="stuKeepAllBox">
+          <label class="check"><input type="checkbox" id="stu_keepAll"> Keep the whole recording — also where the camera was not running yet (or had stopped)</label>
+          <p class="hint" id="stuSpanInfo"></p>
+          <div class="row">
+            <label class="f"><span>Fill the missing picture with</span><select id="stu_fill"><option value="auto">Moments where the speaker listens (else a title card)</option><option value="title">A title card</option><option value="file">My photo or video…</option></select></label>
+            <label class="f" id="stuFillTitleRow"><span>Title on the card</span><input id="stu_fillTitle" placeholder="e.g. Divine Light Meditation"></label>
+          </div>
+          <div class="under" id="stuFillFileRow" style="margin:0 0 8px"><button class="btn small" id="stuFillPick">Choose photo/video…</button><span class="status" id="stuFillFile"></span></div>
+        </div>
       </fieldset>
 
       <fieldset id="stuSound"><legend>4 · Clean the sound</legend>
@@ -101,10 +110,11 @@
 
       <fieldset id="stuStep5"><legend>5 · Transcribe</legend>
         <div class="row">
+          <label class="f"><span>Transcribe with</span><select id="stu_asr"><option value="accurate">This computer — accurate (recommended)</option><option value="fast">This computer — fast</option><option value="best">This computer — best (slow)</option><option value="online">Online (Groq / Gemini key)</option></select></label>
           <label class="f"><span>Language</span><select id="stu_lang"><option value="">Detect automatically</option><option value="en">English</option><option value="hi">Hindi</option><option value="te">Telugu</option><option value="ta">Tamil</option><option value="kn">Kannada</option></select></label>
           <div class="under" style="align-self:end;margin:0 0 12px"><button class="btn small primary" id="stuTranscribe">Transcribe</button><button class="btn small" id="stuStop">Stop</button></div>
         </div>
-        <p class="hint">Uses your free Groq key (best word timing), or Gemini as a backup.</p>
+        <p class="hint">Runs on this computer — private, free, no key needed (the speech model downloads once). “Online” uses your Groq or Gemini key from Preferences instead.</p>
         <p class="status" id="stuTxStatus"></p>
         <details id="stuOwnBox" style="margin-top:10px" open><summary style="cursor:pointer;font-weight:500">Use my accurate transcript (exact wording)</summary>
           <p class="hint" style="margin:6px 0 8px">Paste your transcript or load it from a file (.txt, .docx, .srt). After transcribing above, press <strong>Line up</strong>: the editor then shows <em>your</em> words, each with its exact time in the recording. Words to check are underlined in orange; spoken words that are not in your text (um, repeats) are grey.</p>
@@ -161,8 +171,21 @@
           <p class="status" id="picFacesStatus"></p>
           <div class="row">
             <label class="f"><span>Shape of the full video</span><select id="pic_layout"><option value="crop169">YouTube 16:9 — follows the speaker (recommended)</option><option value="blur169">YouTube 16:9 — whole picture, blurred sides</option><option value="original">Same as recorded (vertical)</option></select></label>
-            <label class="f"><span>Close-up at every cut (hides jump cuts)</span><select id="pic_punch"><option value="1">None</option><option value="1.1">Gentle (110%)</option><option value="1.18">Standard (118%, recommended)</option><option value="1.25">Strong (125%)</option></select></label>
+            <label class="f"><span>At every cut</span><select id="pic_cutStyle"><option value="punch">Close-up (hides jump cuts)</option><option value="dissolve">Smooth dissolve (0.4 s)</option><option value="cut">Plain cut</option></select></label>
+            <label class="f" id="picPunchRow"><span>Close-up size</span><select id="pic_punch"><option value="1">None</option><option value="1.1">Gentle (110%)</option><option value="1.18">Standard (118%, recommended)</option><option value="1.25">Strong (125%)</option></select></label>
           </div>
+          <h4 class="group-title">My own framing box</h4>
+          <p class="hint" style="margin:0 0 6px">Choose exactly what is shown — for example move the box up to leave out the lower body. Reels keep their automatic framing.</p>
+          <p class="status" id="picRectStatus"></p>
+          <div class="under" style="margin:0 0 8px"><button class="btn small" id="picRectDraw">Draw my framing box…</button><button class="btn small" id="picRectAuto">Back to automatic framing</button></div>
+          <h4 class="group-title">Background</h4>
+          <div class="row">
+            <label class="f"><span>Behind the speaker</span><select id="pic_bgMode"><option value="none">Keep the real background</option><option value="blur">Blur the background</option><option value="colour">A plain colour</option><option value="image">My picture…</option></select></label>
+            <label class="f" id="picBgColourRow"><span>Colour</span><input type="color" id="pic_bgColour" value="#1e2a36" style="height:38px;padding:2px"></label>
+          </div>
+          <div class="under" id="picBgFileRow" style="margin:0 0 8px"><button class="btn small" id="picBgPick">Choose picture…</button><span class="status" id="picBgFile"></span></div>
+          <div class="under" style="margin:0 0 4px"><button class="btn small primary" id="picMatte">Find the person (once per video)</button></div>
+          <p class="status" id="picMatteStatus"></p>
           <h4 class="group-title">Colour</h4>
           <label class="check"><input type="checkbox" id="pic_auto"> Match colour and brightness automatically between parts</label>
           <div class="row">
@@ -225,6 +248,10 @@
           <label class="f"><span>Reel size</span><select id="stu_reelRes"><option value="1080">1080 × 1920 (best for Instagram)</option><option value="720">720 × 1280 (smaller)</option></select></label>
         </div>
         <label class="check"><input type="checkbox" id="stu_reelCaps"> Burn captions into Reels</label>
+        <div class="row">
+          <label class="check"><input type="checkbox" id="stu_exWhatsapp"> Also a small copy for WhatsApp (720p)</label>
+          <label class="check"><input type="checkbox" id="stu_exSquare"> Also a square copy for the Instagram / Facebook feed</label>
+        </div>
         <div id="engRenderBox" hidden>
           <div class="under" style="margin:8px 0"><button class="btn primary" id="engRenderBtn">Make the final files on this computer</button><button class="btn small" id="engOpenFolder" hidden>Open the folder</button></div>
           <p class="hint">Made next to your video: <em>Edited - full video.mp4</em>, the podcast (<em>.mp3</em> + <em>.wav</em>), captions (<em>.srt</em> + <em>.vtt</em>), chapters and YouTube text, every Reel, a timeline for DaVinci Resolve (<em>.fcpxml</em>) and a cut list (<em>.edl</em>) for fine-tuning by hand, and a quality check (lip sync, loudness, black or frozen picture, caption timing). On a laptop, choose 1080p: a 1-hour talk takes roughly 1–3 hours. You can close the browser; the engine keeps working. If it is interrupted, press Resume — finished parts are kept.</p>

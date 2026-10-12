@@ -11,6 +11,7 @@ from fractions import Fraction
 import numpy as np
 
 DISSOLVE_S = 0.5
+CUT_DISSOLVE_S = 0.4  # "smooth dissolve at cuts": length of the mix between the two sides of a cut
 
 
 @dataclass
@@ -54,7 +55,8 @@ def output_ranges(keep_frames: list, covers_src: list, fr: Fraction) -> list[tup
     return [(a, b) for a, b, _ in output_ranges_idx(keep_frames, covers_src, fr)]
 
 
-def plan(keep_frames: list, cover_out: list, fr: Fraction) -> list[Piece]:
+def plan(keep_frames: list, cover_out: list, fr: Fraction, hard: frozenset = frozenset(), xcuts: bool = False,
+         src_frames: int | None = None) -> list[Piece]:
     """Split the edited timeline into pieces. Dissolves of DISSOLVE_S at cover edges (when the cover is long
     enough). A dissolve split by a cut keeps its progress (extra['tpos'] = frames already dissolved)."""
     D = int(round(DISSOLVE_S * fr))
@@ -64,12 +66,23 @@ def plan(keep_frames: list, cover_out: list, fr: Fraction) -> list[Piece]:
         part_start.append(part_start[-1] + e - s)
     trans = []  # (lo, hi, kind, cover)
     for ci, (a, b) in enumerate(cover_out):
-        if b - a < 2 * D:
-            continue  # too short for dissolves: hard cuts
+        if b - a < 2 * D or ci in hard:
+            continue  # too short for dissolves (or a stretch with no camera picture): hard cuts
         if a > 0:
             trans.append((max(0, a - D // 2), a + (D - D // 2), "in", ci))
         if b < total:
             trans.append((b - D // 2, min(total, b + (D - D // 2)), "out", ci))
+    if xcuts:  # a short dissolve centred on every cut (uses the picture just past each side of the cut)
+        X = int(round(CUT_DISSOLVE_S * fr))
+        for k in range(1, len(keep_frames)):
+            P = part_start[k]
+            lo, hi = P - X // 2, P + (X - X // 2)
+            ka, kb = keep_frames[k - 1], keep_frames[k]
+            enough = (ka[1] - ka[0] >= 2 * X and kb[1] - kb[0] >= 2 * X and kb[0] - X // 2 >= 0
+                      and (src_frames is None or ka[1] + X <= src_frames) and ka[0] >= 0)
+            if enough and not any(not (hi <= a or lo >= b) for a, b in cover_out) \
+                    and not any(not (hi <= t[0] or lo >= t[1]) for t in trans):
+                trans.append((lo, hi, "x", k))
     bounds = set(part_start) | {0, total}
     for lo, hi, _, _ in trans:
         bounds.update((lo, hi))
@@ -90,7 +103,13 @@ def plan(keep_frames: list, cover_out: list, fr: Fraction) -> list[Piece]:
         src = keep_frames[k][0] + (lo - part_start[k])
         t = next((x for x in trans if x[0] <= lo and hi <= x[1]), None)
         inside = next((ci for ci, (a, b) in enumerate(cover_out) if a <= lo and hi <= b), -1)
-        if t:
+        if t and t[2] == "x":  # both sides of a cut, mixed
+            kb = t[3]
+            ka = kb - 1
+            pieces.append(Piece("xcut", hi - lo, ka, keep_frames[ka][0] + (lo - part_start[ka]), -1, 0,
+                                {"tpos": lo - t[0], "tlen": t[1] - t[0], "part2": kb,
+                                 "src2": keep_frames[kb][0] + (lo - part_start[kb])}))
+        elif t:
             ci = t[3]
             pieces.append(Piece(t[2], hi - lo, k, src, ci, lo - clip_start(ci),
                                 {"tpos": lo - t[0], "tlen": t[1] - t[0]}))
@@ -108,16 +127,19 @@ def plan(keep_frames: list, cover_out: list, fr: Fraction) -> list[Piece]:
         elif (q and p.kind == q.kind and p.kind in ("in", "out") and p.cov == q.cov and p.part == q.part
               and q.src + q.n == p.src and q.coff + q.n == p.coff):
             q.n += p.n
+        elif (q and p.kind == q.kind == "xcut" and p.part == q.part and q.src + q.n == p.src
+              and q.extra["src2"] + q.n == p.extra["src2"]):
+            q.n += p.n
         else:
             merged.append(p)
     return merged
 
 
-def cover_clip_frames(cover_out: list, ci: int, fr: Fraction, total: int) -> int:
+def cover_clip_frames(cover_out: list, ci: int, fr: Fraction, total: int, hard: frozenset = frozenset()) -> int:
     """Length of the clip made for cover ci (its range plus half a dissolve on each side)."""
     D = int(round(DISSOLVE_S * fr))
     a, b = cover_out[ci]
-    if b - a < 2 * D:
+    if b - a < 2 * D or ci in hard:
         return b - a
     return (b - a) + (D // 2 if a > 0 else 0) + ((D - D // 2) if b < total else 0)
 
@@ -164,6 +186,10 @@ def colour_gains(faces: dict | None, a_s: float, b_s: float) -> tuple[float, flo
     return tuple(round(float(x), 3) for x in g)
 
 
+def _wheel(c: dict, wheel: str, ch: str) -> float:
+    return max(-1.0, min(1.0, float(((c.get(wheel) or {}).get(ch)) or 0)))
+
+
 def colour_filter(st: dict, gains) -> str:
     c = st.get("colour") or {}
     f = []
@@ -175,4 +201,16 @@ def colour_filter(st: dict, gains) -> str:
     wm = float(c.get("warmth", 0))
     if abs(wm) > 1e-3:
         f.append(f"colortemperature=temperature={int(6500 - 1000 * wm)}")
+    # colour wheels, as in Resolve: per channel  out = (gain * x + lift * (1 - x)) ^ (1 / gamma)
+    # (lift moves the shadows, gamma the midtones, gain the highlights; the wheels give a push per channel)
+    chans = {}
+    for ch in "rgb":
+        lift = 0.25 * _wheel(c, "lift", ch)
+        gain = 0.5 * _wheel(c, "gain", ch)
+        gam = 1 + 0.5 * _wheel(c, "gamma", ch)
+        if abs(lift) > 1e-3 or abs(gain) > 1e-3 or abs(gam - 1) > 1e-3:
+            chans[ch] = (f"'clip(maxval*pow(clip({1 + gain:.4f}*val/maxval+{lift:.4f}*(1-val/maxval),0,1),"
+                         f"{1 / max(0.2, gam):.4f}),0,maxval)'")
+    if chans:
+        f.append("lutrgb=" + ":".join(f"{ch}={e}" for ch, e in chans.items()))
     return ",".join(f)

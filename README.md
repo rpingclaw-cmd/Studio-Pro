@@ -1,15 +1,27 @@
 # Studio Pro
 
-A desktop video editor for talks and podcasts (Windows; Mac and Linux too).
+A desktop video editor for talks and podcasts (Windows; Mac and Linux too), laid out like DaVinci Resolve.
+Everything runs on your own computer; your videos are never uploaded.
 
-- **Editor laid out like DaVinci Resolve:** timeline, viewer, Inspector, and the Media · Edit · Color · Fairlight · Deliver pages.
-- **Sync built in:** syncs a separate recorder with the camera automatically (offset and clock drift), checking lip sync.
-- **Clean sound:** cleans the voice with AI (DeepFilterNet) and sets broadcast loudness.
-- **Edit by text:** delete words in the transcript to cut them from the video, with captions word-for-word.
-- **Picture tools:** framing that follows the face, covers and Reels.
-- **YouTube package:** title, description, chapters and thumbnails.
-- **For other editors:** exports a timeline for DaVinci Resolve (FCPXML) and a cut list (EDL).
-- **Private:** everything runs on your own computer, and your videos are never uploaded.
+- **Sync:** a separate recorder is lined up with the camera to the millisecond (clock drift corrected) and checked
+  word by word. If the recorder started before the camera, the whole recording is kept and the missing picture is
+  filled automatically.
+- **Sound and words:**
+  - AI voice cleaning (DeepFilterNet) and broadcast loudness.
+  - Background music that dips under the voice.
+  - Voice level per clip.
+  - Transcription on this computer (Whisper), and editing by deleting words.
+- **Picture:**
+  - Framing that follows the face, or your own framing box (e.g. leave out the lower body).
+  - Background removal or replacement (blur, colour, your picture).
+  - Colour wheels, looks and LUTs; titles and lower thirds; dissolves at cuts; slow zoom; covers.
+- **Delivery:**
+  - Reels with word-by-word captions, and a YouTube package with chapters and thumbnails.
+  - Extra copies for WhatsApp and the square feed.
+  - FCPXML and EDL timelines for other editors.
+- **Quality check** after every render: lip sync at 3 points, loudness, length, picture, caption readability.
+
+See [docs/USER_GUIDE.md](docs/USER_GUIDE.md) for plain step-by-step instructions.
 
 ## Install (Windows)
 
@@ -20,5 +32,6 @@ A desktop video editor for talks and podcasts (Windows; Mac and Linux too).
 
 ## Licence
 
-Free software under the GNU GPL v3. It includes FFmpeg (GPL build), DeepFilterNet (MIT/Apache-2.0), Silero VAD (MIT),
-OpenCV YuNet (Apache-2.0) and Electron (MIT).
+Free software under the GNU GPL v3. It includes FFmpeg (GPL build), DeepFilterNet (MIT/Apache-2.0), faster-whisper and
+Whisper models (MIT), Silero VAD (MIT), OpenCV YuNet (Apache-2.0), Robust Video Matting (GPL-3.0), DejaVu fonts and
+Electron (MIT).

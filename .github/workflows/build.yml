@@ -23,11 +23,14 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y espeak-ng ffmpeg
       - name: Bundled tools (FFmpeg 8.1, DeepFilterNet)
         run: python3 tools/bundle_runtime.py tools
+      - name: A portrait photo for the picture tests (OpenCV's sample image)
+        run: curl -sSL -o face.jpg https://raw.githubusercontent.com/opencv/opencv/4.x/samples/data/lena.jpg
       - name: Engine tests (with the tools the app ships)
         working-directory: engine
         env:
           STUDIO_BIN: ${{ github.workspace }}/desktop/build/bin
           STUDIO_DEEP_FILTER: ${{ github.workspace }}/desktop/build/bin/deep-filter
+          STUDIO_TEST_FACE: ${{ github.workspace }}/face.jpg
         run: uv run pytest -q tests
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
@@ -52,7 +55,7 @@ jobs:
           PYTHONUTF8: "1"
         run: |
           $env:PATH = "$env:STUDIO_BIN;$env:PATH"
-          uv run pytest -q tests/test_engine.py
+          uv run pytest -q tests/test_engine.py tests/test_transcribe.py tests/test_pro.py
       - name: Build the installer
         working-directory: desktop
         run: |

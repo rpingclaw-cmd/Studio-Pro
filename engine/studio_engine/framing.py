@@ -155,12 +155,15 @@ def override_y(overrides: list, a: float, b: float, framer: "Framer | None" = No
     return None
 
 
-def sendcmd_text(fr: Fraction, x: np.ndarray, y: np.ndarray, name: str = "crop@fr") -> str:
-    """ffmpeg 'sendcmd' lines that move the crop window frame by frame (only when it actually moves)."""
-    lines, lx, ly = [], None, None
+def sendcmd_text(fr: Fraction, x: np.ndarray, y: np.ndarray, name: str = "crop@fr", w: np.ndarray | None = None,
+                 h: np.ndarray | None = None) -> str:
+    """ffmpeg 'sendcmd' lines that move (and, for a slow zoom, resize) the crop window frame by frame."""
+    lines, last = [], None
     for i in range(len(x)):
-        if x[i] != lx or y[i] != ly:
+        cur = (x[i], y[i], None if w is None else w[i], None if h is None else h[i])
+        if cur != last:
             t = float(Fraction(i) / fr)
-            lines.append(f"{t:.4f} {name} x {int(x[i])}, {name} y {int(y[i])};")
-            lx, ly = x[i], y[i]
+            size = f"{name} w {int(w[i])}, {name} h {int(h[i])}, " if w is not None else ""
+            lines.append(f"{t:.4f} {size}{name} x {int(x[i])}, {name} y {int(y[i])};")
+            last = cur
     return "\n".join(lines) + "\n"

@@ -8,7 +8,7 @@ audio_time = a + b * video_time   (same convention as the browser version)
 """
 import numpy as np
 
-from .jobs import Ctx, JobError
+from .jobs import Cancelled, Ctx, JobError
 from .wavio import open_pcm16
 
 
@@ -123,9 +123,141 @@ def compute(ctx: Ctx | None, vpath, apath) -> dict:
     return res
 
 
+# ---------- the words: the same sentences must be heard at the same moment on both recordings ----------
+WORD_WIN = 40.0
+
+
+def _tok(w: str) -> str:
+    import re
+    return re.sub(r"[^\w]", "", w.lower())
+
+
+def _match_times(wa: list, wb: list) -> list[tuple[float, float]]:
+    """Pairs of start times of the same words (in order) in two word lists."""
+    import difflib
+    ta, tb = [_tok(w["w"]) for w in wa], [_tok(w["w"]) for w in wb]
+    sm = difflib.SequenceMatcher(None, ta, tb, autojunk=False)
+    out = []
+    for blk in sm.get_matching_blocks():
+        if blk.size >= 2:  # runs of 2+ words: single common words ("the") could pair up wrongly
+            out += [(wa[blk.a + k]["s"], wb[blk.b + k]["s"]) for k in range(blk.size) if ta[blk.a + k]]
+    return out
+
+
+def _words(ctx, path, start: float, dur: float, quality: str, language):
+    from . import transcribe
+    x, rate, t0 = read_window(path, max(0.0, start), dur)
+    if rate != 16000:
+        return []
+    w, _ = transcribe.words_of(None, x.astype(np.float32), quality, language, offset_s=t0)
+    return w
+
+
+def word_check(ctx: Ctx | None, vpath, apath, res: dict, quality: str = "fast", language=None) -> dict:
+    """Transcribe ~40 s of each recording at 3 points and check the same words land at the same video time."""
+    a, b = res["a"], res["b"]
+    _, vr, _ = _mono(vpath)
+    dur_v = _mono(vpath)[0].shape[0] / vr
+    dur_a = _mono(apath)[0].shape[0] / _mono(apath)[1]
+    lo, hi = max(0.0, -a / b) + 5, min(dur_v, (dur_a - a) / b) - WORD_WIN - 5
+    if hi <= lo:
+        return {"checked": 0}
+    from . import models
+    models.whisper_model(ctx, quality)  # (downloads once, with progress)
+    pts = []
+    for k, f in enumerate((0.15, 0.5, 0.85)):
+        if ctx:
+            ctx.check()
+            ctx.progress(0.7 + 0.1 * k, f"Checking the words at 3 points ({k + 1} of 3)…")
+        tv = lo + (hi - lo) * f
+        cam = _words(ctx, vpath, tv, WORD_WIN, quality, language)
+        rec = _words(ctx, apath, a + b * tv - 3, WORD_WIN + 6, quality, language)
+        for w in rec:
+            w["s"] = (w["s"] - a) / b
+        pairs = _match_times(cam, rec)
+        if len(pairs) >= 4:
+            d = np.array([r - c for c, r in pairs])
+            pts.append({"tv": round(tv, 1), "words": len(pairs), "of": len(cam), "err_ms": round(float(np.median(d)) * 1000, 1)})
+        else:
+            pts.append({"tv": round(tv, 1), "words": len(pairs), "of": len(cam), "err_ms": None})
+    ok = [p for p in pts if p["err_ms"] is not None and abs(p["err_ms"]) < 120]
+    return {"checked": len(pts), "agree": len(ok), "points": pts}
+
+
+def word_sync(ctx: Ctx | None, vpath, apath, quality: str = "fast", language=None) -> dict | None:
+    """Backup when the sound patterns do not match well: find each camera passage's words in the recorder."""
+    _, vr, _ = _mono(vpath)
+    dur_v = _mono(vpath)[0].shape[0] / vr
+    dur_a = _mono(apath)[0].shape[0] / _mono(apath)[1]
+    from . import models
+    models.whisper_model(ctx, quality)
+    if ctx:
+        ctx.progress(0.55, "Listening to the words of the whole recorder file (backup sync)…")
+    rec = _words(ctx, apath, 0, dur_a, quality, language)
+    offs = []
+    for f in (0.15, 0.5, 0.85):
+        tv = max(0.0, (dur_v - WORD_WIN) * f)
+        cam = _words(ctx, vpath, tv, WORD_WIN, quality, language)
+        pairs = _match_times(cam, rec)
+        if len(pairs) >= 6:
+            offs.append((tv + WORD_WIN / 2, float(np.median([r - c for c, r in pairs]))))
+    if not offs:
+        return None
+    if len(offs) >= 2:
+        slope, icpt = np.polyfit([t for t, _ in offs], [o for _, o in offs], 1)
+        if abs(slope) > 0.0008:
+            slope, icpt = 0.0, float(np.median([o for _, o in offs]))
+    else:
+        slope, icpt = 0.0, offs[0][1]
+    return {"a": float(icpt), "b": float(1 + slope)}
+
+
 def job_sync(ctx: Ctx, p: dict) -> dict:
     from pathlib import Path
     v, a = p.get("video_wav"), p.get("audio_wav")
     if not (v and a and Path(v).is_file() and Path(a).is_file()):
         raise JobError("Run Prepare first (it makes the sound files used for sync).")
-    return compute(ctx, v, a)
+    try:
+        res = compute(ctx, v, a)
+    except JobError:
+        res = None
+    words_ok = p.get("check_words", True) and _have_whisper()
+    if words_ok and (res is None or not res["confident"]):
+        ws = word_sync(ctx, v, a, language=p.get("language"))
+        if ws:  # fine-tune the word-based answer with the exact sound comparison
+            pts = [fine_offset(v, a, tv, ws["a"] + (ws["b"] - 1) * tv, search=1.0)
+                   for tv in np.linspace(30, max(31.0, _mono(v)[0].shape[0] / 16000 - 60), 3)]
+            good = [q for q in pts if q["conf"] >= 4]
+            if good:
+                off = np.array([q["off"] for q in good]); tvs = np.array([q["tv"] for q in good])
+                slope, icpt = (np.polyfit(tvs, off, 1) if len(good) >= 2 else (0.0, off[0]))
+                ws = {"a": float(icpt), "b": float(1 + slope)}
+            res = {**ws, "conf": 4.0 if good else 2.0, "coarse_conf": 0.0, "drift_ppm": round((ws["b"] - 1) * 1e6, 1),
+                   "residual_ms": 0.0, "points": [], "confident": bool(good), "by_words": True,
+                   "message": f"Sync found from the words: the recorder is {abs(ws['a']):.3f} s "
+                              f"{'ahead of' if ws['a'] > 0 else 'behind'} the camera"
+                              + (" ✓" if good else " — ⚠ please check lip sync by eye.")}
+    if res is None:
+        raise JobError("Could not find the sync — are these the right two files? (No common sound or words found.)")
+    res["video_dur"] = round(_mono(v)[0].shape[0] / _mono(v)[1], 3)
+    res["audio_dur"] = round(_mono(a)[0].shape[0] / _mono(a)[1], 3)
+    if words_ok:
+        try:
+            wc = word_check(ctx, v, a, res, language=p.get("language"))
+            res["words"] = wc
+            if wc.get("checked"):
+                res["message"] += (f" Words agree at {wc['agree']} of {wc['checked']} points ✓" if wc["agree"] == wc["checked"]
+                                   else f" ⚠ The words agree at only {wc['agree']} of {wc['checked']} points — check lip sync by eye.")
+        except Cancelled:
+            raise
+        except Exception as e:  # the word check is extra: never fail the sync because of it (e.g. no internet for the model)
+            res["words"] = {"error": str(e)[:200]}
+    return res
+
+
+def _have_whisper() -> bool:
+    try:
+        import faster_whisper  # noqa: F401
+        return True
+    except ImportError:
+        return False

@@ -2,7 +2,7 @@
    STUDIO — podcast / talk editor. Heavy video work is done by ffmpeg on
    the user's own computer; the browser does sync, transcript, editing.
    ===================================================================== */
-const STU_DEFAULTS={clean:'standard',res:'1080',enc:'auto',lang:'',fillers:true,pauses:true,maxPause:1.0,trimEnds:true,srt:true,reelCaps:true,reelRes:'1080',separate:true,proxy:false};
+const STU_DEFAULTS={clean:'standard',res:'1080',enc:'auto',lang:'',asr:'accurate',keepAll:true,fill:'auto',fillTitle:'',fillFile:'',fillers:true,pauses:true,maxPause:1.0,trimEnds:true,srt:true,reelCaps:true,reelRes:'1080',separate:true,proxy:false};
 let STU={videoName:'',audioName:'',videoFile:null,proxyFile:null,info:null,wavV:null,wavA:null,dur:0,sync:null,words:[],removed:{},reels:[],settings:{...STU_DEFAULTS},transcribed:false};
 const FILLERS=new Set(['um','umm','uh','uhh','erm','er','ah','hmm','mm','mmm','uhm']);
 function stuSay(id,t){const el=$(id);if(el)el.textContent=t}
@@ -112,6 +112,13 @@ async function geminiWords(blob,lang,signal){
   return out;
 }
 async function transcribeStudio(onStatus,signal){
+  if(STU.settings.asr!=='online'&&typeof ENG!=='undefined'&&ENG.on&&STU.engPrep){  // on this computer (Studio Engine)
+    onStatus('Transcribing on this computer (see progress at the top)…');
+    const r=await engRun('transcribe',engParams({quality:STU.settings.asr||'accurate',language:STU.settings.lang||''}));
+    const SP=stuSpan();STU.words=r.words.map(w=>({w:w.w,s:w.s,e:w.e,...(w.p<0.5?{u:true}:{})})).filter(w=>w.e>-SP.pre&&w.s<STU.dur+SP.post+1);
+    STU.asrWords=STU.words.map(w=>({...w}));STU.aligned=false;if(typeof ANA!=='undefined'&&ANA)anaMergeSounds();
+    STU.removed={};STU.transcribed=true;autoMarks();await stuSave();onStatus(r.message);return;
+  }
   const src=STU.settings.separate&&STU.wavA?STU.wavA:STU.wavV;if(!src)throw new Error('Load the prepared sound files first.');
   const useGroq=!!pKey('groq')&&!(cooled.groq>Date.now());const useGem=!!pKey('gemini');
   if(!useGroq&&!useGem)throw new Error('Add a Groq key (best, free) or a Gemini key in Setup first.');
@@ -143,21 +150,27 @@ function autoMarks(){
   if(STU.settings.fillers)STU.words.forEach((w,i)=>{if(isFiller(w)&&!STU.removed[i])STU.removed[i]='auto'});
   if(STU.settings.extraCut!==false)STU.words.forEach((w,i)=>{if(w.x&&!STU.removed[i])STU.removed[i]='auto'});
 }
+/* 'keep the whole recording': seconds of recorder before the camera started (pre) and after it stopped (post) */
+function stuSpan(){
+  const s=STU.sync;if(!(STU.settings.keepAll&&STU.settings.separate&&s&&s.audio_dur&&STU.dur))return {pre:0,post:0};
+  const pre=Math.max(0,s.a/s.b),post=Math.max(0,(s.audio_dur-s.a)/s.b-STU.dur);
+  return {pre:pre>0.25?+pre.toFixed(3):0,post:post>0.25?+post.toFixed(3):0};
+}
 function keepSegments(){
-  const W=STU.words,D=STU.dur||((W.length?W[W.length-1].e:0)+1),cuts=[];
+  const W=STU.words,SP=stuSpan(),T0=-SP.pre,D=(STU.dur||((W.length?W[W.length-1].e:0)+1))+SP.post,cuts=[];
   const q=(a,b)=>(typeof quietest==='function'?quietest(a,b):(a+b)/2);
   const gapMid=(i)=>{const p=W[i-1],n=W[i];return p?q(Math.min(p.e,n.s),Math.max(p.e,n.s)):Math.max(0,n.s-0.15)};
   for(let i=0;i<W.length;i++){if(!STU.removed[i])continue;let j=i;while(j+1<W.length&&STU.removed[j+1])j++;
-    const s=i>0?Math.min(gapMid(i),W[i].s):Math.max(0,W[i].s-0.1),e=j+1<W.length?Math.max(q(Math.min(W[j].e,W[j+1].s),Math.max(W[j].e,W[j+1].s)),W[j].e):Math.min(D,W[j].e+0.15);cuts.push([s,e]);i=j}
-  for(const c of STU.manualCuts||[])if(c[1]>c[0])cuts.push([Math.max(0,c[0]),Math.min(D,c[1])]);  // cut by hand in the Editor's timeline
+    const s=i>0?Math.min(gapMid(i),W[i].s):Math.max(T0,W[i].s-0.1),e=j+1<W.length?Math.max(q(Math.min(W[j].e,W[j+1].s),Math.max(W[j].e,W[j+1].s)),W[j].e):Math.min(D,W[j].e+0.15);cuts.push([s,e]);i=j}
+  for(const c of STU.manualCuts||[])if(c[1]>c[0])cuts.push([Math.max(T0,c[0]),Math.min(D,c[1])]);  // cut by hand in the Editor's timeline
   if(STU.settings.pauses&&typeof ANA!=='undefined'&&ANA)cuts.push(...anaPauseCuts(Math.max(0.4,+STU.settings.maxPause||1),STU.settings.keepBreaths!==false));
   else if(STU.settings.pauses){const mp=Math.max(0.4,+STU.settings.maxPause||1);let prev=null;
     for(let i=0;i<W.length;i++){if(STU.removed[i])continue;if(prev!==null){const g=W[i].s-W[prev].e;if(g>mp)cuts.push([W[prev].e+mp/2,W[i].s-mp/2])}prev=i}}
   if(STU.settings.trimEnds&&W.length){const first=W.findIndex((w,i)=>!STU.removed[i]);let last=W.length-1;while(last>=0&&STU.removed[last])last--;
-    if(first>=0){if(W[first].s>0.8)cuts.push([0,W[first].s-0.5]);if(D-W[last].e>0.8)cuts.push([W[last].e+0.5,D])}}
+    if(first>=0){if(W[first].s-T0>0.8)cuts.push([T0,W[first].s-0.5]);if(D-W[last].e>0.8)cuts.push([W[last].e+0.5,D])}}
   cuts.sort((x,y)=>x[0]-y[0]);const merged=[];
   for(const c of cuts){if(c[1]-c[0]<0.08)continue;const m=merged[merged.length-1];if(m&&c[0]<=m[1]+0.05)m[1]=Math.max(m[1],c[1]);else merged.push([...c])}
-  const keep=[];let t=0;for(const c of merged){if(c[0]-t>0.2)keep.push([t,c[0]]);t=Math.max(t,c[1])}if(D-t>0.2)keep.push([t,D]);
+  const keep=[];let t=T0;for(const c of merged){if(c[0]-t>0.2)keep.push([t,c[0]]);t=Math.max(t,c[1])}if(D-t>0.2)keep.push([t,D]);
   return keep;
 }
 function clipSegs(segs,s,e){const out=[];for(const [a,b] of segs){const x=Math.max(a,s),y=Math.min(b,e);if(y-x>0.15)out.push([x,y])}return out}
@@ -302,9 +315,18 @@ function stuRenderInfo(){
   $('#stuAudioRow').hidden=!STU.settings.separate;
   const s=STU.sync;$('#stuSyncOut').textContent=s?(s.engine&&s.message?s.message:`Offset ${(s.a*1000).toFixed(0)} ms, drift ${((s.b-1)*1e6).toFixed(0)} ppm${s.conf<4?' — low confidence: check lip sync and adjust below':' — confident match'}`):'';
   if(s)$('#stuOffset').value=Math.round(s.a*1000);
-  ['clean','res','enc','reelRes','lang'].forEach(k=>{const el=$('#stu_'+k);if(el)el.value=STU.settings[k]});
+  ['clean','res','enc','reelRes','lang','asr'].forEach(k=>{const el=$('#stu_'+k);if(el)el.value=STU.settings[k]});
   ['fillers','pauses','trimEnds','reelCaps','proxy','separate'].forEach(k=>{const el=$('#stu_'+k);if(el)el.checked=!!STU.settings[k]});
+  const ex=STU.settings.extras||[];if($('#stu_exWhatsapp')){$('#stu_exWhatsapp').checked=ex.includes('whatsapp');$('#stu_exSquare').checked=ex.includes('square')}
   const el=$('#stu_maxPause');if(el)el.value=STU.settings.maxPause;
+  // keep the whole recording
+  const kb=$('#stuKeepAllBox');if(kb){kb.hidden=!STU.settings.separate;$('#stu_keepAll').checked=!!STU.settings.keepAll;
+    $('#stu_fill').value=STU.settings.fill||'auto';$('#stu_fillTitle').value=STU.settings.fillTitle||'';
+    $('#stuFillTitleRow').hidden=STU.settings.fill==='file';$('#stuFillFileRow').hidden=STU.settings.fill!=='file';
+    $('#stuFillFile').textContent=STU.settings.fillFile?STU.settings.fillFile.split(/[\\/]/).pop():'nothing chosen';
+    const SP=stuSpan(),raw=STU.sync&&STU.sync.audio_dur?{pre:Math.max(0,STU.sync.a/STU.sync.b),post:Math.max(0,(STU.sync.audio_dur-STU.sync.a)/STU.sync.b-STU.dur)}:null;
+    $('#stuSpanInfo').textContent=!raw?'Find the sync first: then you will see how much of the recording is outside the video.':
+      (raw.pre>0.25||raw.post>0.25)?`The recorder started ${raw.pre.toFixed(1)} s before the camera${raw.post>0.25?` and ran ${raw.post.toFixed(1)} s after it stopped`:''}. `+(STU.settings.keepAll?'That sound is kept; the picture there is filled automatically.':'Tick the box to keep that sound too.'):'The recording is all inside the video — nothing extra to keep.'}
 }
 function stuRenderTranscript(){
   const box=$('#stuText');if(!STU.words.length){box.innerHTML='<p class="status">No transcript yet.</p>';stuStats();return}
@@ -335,7 +357,7 @@ function wireStudio(){
   $('#stuAudioFile').addEventListener('change',e=>{const f=e.target.files[0];if(!f)return;STU.audioName=f.name;stuSave();stuRenderInfo()});
   stuVideo().addEventListener('error',()=>stuSay('#stuPrepStatus',(typeof ENG!=='undefined'&&ENG.on)?'This browser cannot play the preview video (H.264). Please use Chrome or Edge for the Studio tab.':'Your browser cannot play this video directly. Tick "Make a small preview copy", download the prepare file again and run it, then load preview.mp4.'));
   stuVideo().addEventListener('loadedmetadata',()=>{if(!STU.dur&&isFinite(stuVideo().duration))STU.dur=stuVideo().duration});
-  ['clean','res','enc','reelRes','lang'].forEach(k=>$('#stu_'+k).addEventListener('change',e=>{STU.settings[k]=e.target.value;stuSave()}));
+  ['clean','res','enc','reelRes','lang','asr'].forEach(k=>$('#stu_'+k).addEventListener('change',e=>{STU.settings[k]=e.target.value;stuSave()}));
   ['fillers','pauses','trimEnds','reelCaps','proxy'].forEach(k=>$('#stu_'+k).addEventListener('change',e=>{STU.settings[k]=e.target.checked;if(k==='fillers')autoMarks();stuSave();stuRenderTranscript()}));
   $('#stu_maxPause').addEventListener('change',e=>{STU.settings.maxPause=+e.target.value||1;stuSave();stuStats()});
   $('#stuPrepWin').addEventListener('click',()=>stuPrep('win'));$('#stuPrepMac').addEventListener('click',()=>stuPrep('mac'));
@@ -352,6 +374,11 @@ function wireStudio(){
     }catch(err){stuSay('#stuLoadStatus',err.message)}e.target.value=''});
   $('#stuSync').addEventListener('click',async()=>{
     try{STU.sync=(ENG.on&&STU.engPrep)?await engSync(t=>stuSay('#stuSyncOut',t)):await computeSync(t=>stuSay('#stuSyncOut',t));await stuSave();stuRenderInfo()}catch(e){stuSay('#stuSyncOut',e.message)}});
+  ['exWhatsapp','exSquare'].forEach(k=>$('#stu_'+k).addEventListener('change',()=>{STU.settings.extras=[...($('#stu_exWhatsapp').checked?['whatsapp']:[]),...($('#stu_exSquare').checked?['square']:[])];stuSave()}));
+  $('#stu_keepAll').addEventListener('change',e=>{STU.settings.keepAll=e.target.checked;stuSave();stuRenderInfo();stuRenderTranscript()});
+  $('#stu_fill').addEventListener('change',e=>{STU.settings.fill=e.target.value;stuSave();stuRenderInfo()});
+  $('#stu_fillTitle').addEventListener('change',e=>{STU.settings.fillTitle=e.target.value;stuSave()});
+  $('#stuFillPick').addEventListener('click',async()=>{try{const d=await engChoose('cover');if(d.path){STU.settings.fillFile=d.path;stuSave();stuRenderInfo()}}catch(err){alert(err.message)}});
   $('#stuOffset').addEventListener('change',e=>{STU.sync={...(STU.sync||{b:1,conf:99}),a:(+e.target.value||0)/1000,engine:false};stuSave();stuRenderInfo()});
   $('#stuTranscribe').addEventListener('click',async()=>{
     if(STU.settings.separate&&STU.wavA&&!STU.sync){stuSay('#stuTxStatus','Press "Find sync automatically" first.');return}

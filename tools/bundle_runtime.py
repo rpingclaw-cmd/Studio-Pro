@@ -69,7 +69,7 @@ def python_runtime():
         for p in dst.glob(pat):
             if p.is_dir():
                 shutil.rmtree(p, ignore_errors=True)
-    run(py, "-c", "import numpy, onnxruntime, cv2, fastapi, uvicorn; print('python ok', numpy.__version__)")
+    run(py, "-c", "import numpy, onnxruntime, cv2, fastapi, uvicorn, faster_whisper, ctranslate2; print('python ok', numpy.__version__)")
 
 
 def tools():

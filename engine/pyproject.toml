@@ -1,6 +1,6 @@
 [project]
 name = "studio-engine"
-version = "1.0.0"
+version = "1.1.0"
 description = "Studio Engine: the local helper for the Daily Quote Cards Studio tab (runs on your own computer)."
 requires-python = ">=3.12"
 dependencies = [
@@ -9,6 +9,7 @@ dependencies = [
     "numpy>=2.3,<3",
     "onnxruntime>=1.20,<2",
     "opencv-python-headless>=4.10,<6",
+    "faster-whisper>=1.2.1",
 ]
 
 [project.scripts]

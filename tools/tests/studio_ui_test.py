@@ -93,6 +93,11 @@ try:
         A, B = MEDIA["A"], MEDIA["B"]
         for tv in (5, MEDIA["video_s"] / 2, MEDIA["video_s"] - 10):
             assert abs((sync["a"] + sync["b"] * tv) - (A + B * tv)) < 0.005, sync
+        assert "Words agree at 3 of 3 points" in page.locator("#stuSyncOut").inner_text(), page.locator("#stuSyncOut").inner_text()
+        # keep the whole recording: the recorder started ~3.2 s before the camera
+        page.locator("#stuKeepAllBox").scroll_into_view_if_needed()
+        assert "before the camera" in page.locator("#stuSpanInfo").inner_text(), page.locator("#stuSpanInfo").inner_text()
+        assert page.evaluate("keepSegments()[0][0]") < -3.0
         shot(page, "05-synced")
         # 6. sound preview
         page.locator("#stuSound").scroll_into_view_if_needed()
@@ -114,7 +119,14 @@ try:
         page.click("#stuAnalyse")
         wait_text(page, "#stuAnaStatus", "Voice found", 600)
         shot(page, "06b-voice-map")
-        # stand-in for the Groq transcription (no internet here): words spread over the detected voice,
+        # real transcription on this computer (fast model), then a stand-in with known mistakes for the checks below
+        page.select_option("#stu_asr", "fast"); page.select_option("#stu_lang", "en")
+        page.click("#stuTranscribe")
+        wait_text(page, "#stuTxStatus", "words", 900)
+        assert page.evaluate("STU.words.length") > 80, page.locator("#stuTxStatus").inner_text()
+        assert page.evaluate("STU.words.some(w=>w.s<0)"), "words from before the camera started are kept"
+        shot(page, "06a-transcribed-locally")
+        # stand-in for the transcription: words spread over the detected voice,
         # with a few mis-heard words and some "um"s the speaker said
         page.evaluate("""(script)=>{const segs=ANA.speech;const words=[];let k=0;
           script.slice(0,segs.length).forEach((sent,si)=>{const seg=segs[si];const toks=sent.split(' ');const d=(seg[1]-seg[0])/toks.length;
@@ -167,6 +179,33 @@ try:
         page.evaluate("STU.reels=[{title:'The heart',start:40,end:52}];stuSave();stuStats()")
         page.locator("#stuPicture").scroll_into_view_if_needed()
         shot(page, "06e-picture")
+        # background: plain colour behind the speaker (person found once per video), checked on a still
+        page.select_option("#pic_bgMode", "colour")
+        page.fill("#pic_bgColour", "#c81e1e"); page.dispatch_event("#pic_bgColour", "change")
+        page.click("#picMatte")
+        t0 = time.time()  # (this test video is a small face photo on grey, so "hardly any person" is also right here)
+        while not any(w in page.locator("#picMatteStatus").inner_text() for w in ("Person found", "Hardly any person")):
+            assert time.time() - t0 < 900, page.locator("#picMatteStatus").inner_text()
+            time.sleep(1)
+        page.evaluate("document.querySelector('#stuVideo').currentTime=30")
+        page.click("#picPreview")
+        wait_text(page, "#picStatus", "Still at", 300)
+        page.wait_for_function("document.querySelector('#picStill').complete && document.querySelector('#picStill').naturalWidth>0", timeout=30000)
+        page.locator("#picStill").scroll_into_view_if_needed()
+        shot(page, "06e2-background-colour")
+        # own framing box: drawn with the mouse in the editor (whole video), then back to automatic
+        page.click("#picRectDraw")
+        page.wait_for_selector("#edFrameBox:not([hidden])")
+        bx = page.locator("#edFrameBox .ed-fb-box").bounding_box()
+        page.mouse.move(bx["x"] + bx["width"] / 2, bx["y"] + bx["height"] / 2); page.mouse.down()
+        page.mouse.move(bx["x"] + bx["width"] / 2, bx["y"] + bx["height"] / 2 - 300, steps=5); page.mouse.up()
+        shot(page, "06e3-framing-box")
+        page.click("#edFbDone")
+        r = page.evaluate("pic().rect")
+        assert r and r["y"] < 0.02, r  # moved to the top
+        assert page.evaluate("JSON.stringify(picRenderSettings().rect)") == page.evaluate("JSON.stringify(pic().rect)")
+        page.click("#edClose")
+        page.click("#picRectAuto"); assert page.evaluate("pic().rect") is None
         # 6f. STAGE 4: YouTube text (AI is not reachable here: fill it in), thumbnails from the engine
         page.evaluate("STU.yt={titles:['The heart and the divine light','Meditation on the heart'],title:'The heart and the divine light',description:'A talk about meditation on the heart.',tags:'meditation, heart, Pranahuti'};stuSave();ytRender()")
         full = page.evaluate("ytFullText()")
@@ -199,12 +238,26 @@ try:
         assert st == "206 audio/wav", st
         page.click("#edSndBtn"); assert page.evaluate("ED.recorder===false && stuVideo().muted===false")
         page.click("#edSndBtn"); assert page.evaluate("ED.recorder===true")
+        # the start of the timeline is before the camera: the picture is filled, the cleaned sound plays
+        # (the stand-in transcript starts at the camera's 0:00, so 'trim silence at the start' would trim it)
+        page.evaluate("STU.settings.trimEnds=false;stuSave();stuRenderTranscript()")
+        assert page.evaluate("edToSrc(1.0)") < 0, page.evaluate("[keepSegments()[0], edToSrc(1.0)]")
+        page.evaluate("document.activeElement.blur();edSeek(1.0)")
+        assert page.evaluate("ED.virt!==null && ED.virt<0") and page.locator("#edNoCam").is_visible()
+        shot(page, "06g2-editor-no-camera")
+        page.keyboard.press(" ")
+        page.wait_for_function("ED.virtPlay===true && !document.querySelector('#edAudio').paused", timeout=10000)
+        v0 = page.evaluate("ED.virt"); time.sleep(1.2); v1 = page.evaluate("ED.virt")
+        assert v1 > v0 + 0.5, (v0, v1)
+        page.keyboard.press("k")
+        page.evaluate("edSeek(20)")
         shot(page, "06g-editor-edit")
         tot0 = page.evaluate("edModel().total")
         page.evaluate("document.activeElement.blur();edSeek(edToEd(62))"); page.keyboard.press("Control+b")
         page.evaluate("edSeek(edToEd(66))"); page.keyboard.press("Control+b")
         cx = page.evaluate("(()=>{const r=document.querySelector('#edCanvas').getBoundingClientRect();return r.left+edX(edToEd(64))})()")
-        cy = page.evaluate("document.querySelector('#edCanvas').getBoundingClientRect().top") + 30 + 26 + 20  # ruler + V2 + into V1
+        # the middle of the V1 (video) track, wherever it is
+        cy = page.evaluate("(()=>{const T=edTracks();let y=ED_RULER;for(const t of T){if(t.id==='V1')return document.querySelector('#edCanvas').getBoundingClientRect().top+y+t.h/2;y+=t.h}})()")
         page.mouse.click(cx, cy)
         assert page.evaluate("ED.sel&&ED.sel.type") == "clip", page.evaluate("ED.sel")
         page.keyboard.press("Delete")
@@ -226,6 +279,39 @@ try:
         assert order == "engBox,stuStep1,stuStep2,stuStep3,stuSound,stuStep5,stuStep6,stuStep7,stuPicture,stuYouTube,stuStep10", order
         assert page.evaluate("document.querySelector('#stuStep6 #stuVideo')!==null && document.querySelector('#stuVideo').controls")
         edited_s, nparts = page.evaluate("[edModel().total, keepSegments().length]")
+        # 6j. pro tools: a title (T key), background music (dips under the voice), smooth dissolves at cuts,
+        #     a look + colour wheel, slow zoom and a quieter voice on one clip, extra copies
+        page.click("#appEditorBtn"); page.wait_for_selector("#ed:not([hidden])")
+        page.click("#ed [data-edpage=edit]")
+        page.evaluate("document.activeElement.blur();edSeek(2.0)")
+        page.keyboard.press("t")
+        assert page.evaluate("ED.sel&&ED.sel.type") == "title"
+        page.fill("#edInsp input[data-in=text]", "Divine Light Meditation"); page.dispatch_event("#edInsp input[data-in=text]", "change")
+        page.fill("#edInsp input[data-in=sub]", "Talk on the heart"); page.dispatch_event("#edInsp input[data-in=sub]", "change")
+        assert "Divine Light Meditation" in page.evaluate("titlesAss()") and "Lower" in page.evaluate("titlesAss()")
+        page.evaluate("ED.dirty=true;edRefresh()")
+        shot(page, "06j-title")
+        music = Path(MEDIA["video"]).parent / "music.wav"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=f=110:d=15", "-ar", "48000", str(music)], check=True)
+        page.evaluate("p=>{STU.music={...edMusic(),file:p,db:-20};stuSave();ED.dirty=true;edRefresh()}", str(music))
+        page.click("#ed [data-edpage=fairlight]"); time.sleep(0.4)
+        assert "music.wav" in page.locator("#edMeterInfo").inner_text()
+        shot(page, "06k-fairlight-music")
+        page.click("#ed [data-edpage=color]"); time.sleep(0.3)
+        page.select_option("#edLook", "warm")
+        assert page.evaluate("pic().colour.gain.r") > 0 and page.evaluate("pic().colour.warmth") > 0
+        wb = page.locator("#edWheels [data-wheel=lift] canvas").bounding_box()
+        page.mouse.click(wb["x"] + wb["width"] * 0.3, wb["y"] + wb["height"] * 0.5)  # lift towards cyan-ish
+        assert abs(page.evaluate("pic().colour.lift.r||0")) > 0.01
+        shot(page, "06l-color-wheels")
+        page.click("#edClose")
+        page.select_option("#pic_cutStyle", "dissolve")
+        assert page.evaluate("picRenderSettings().cut_style") == "dissolve" and page.evaluate("picRenderSettings().punch") == 1
+        page.evaluate("const c=edModel().clips[1];STU.frames=[...(STU.frames||[]),{start:c.s,end:c.e,zoom:'auto',hold:false,kb:0.1}];STU.gains=[{start:c.s,end:c.e,db:-6}];stuSave()")
+        assert any(o.get("kb") for o in page.evaluate("picOverrides()"))
+        page.check("#stu_exWhatsapp"); page.check("#stu_exSquare")
+        rp = page.evaluate("engRenderParams()")
+        assert rp["music"]["file"].endswith("music.wav") and rp["titles_ass"] and rp["voice_gains"] and rp["settings"]["extras"] == ["whatsapp", "square"]
         # 7. render (edited by text, with cross-fades) + quality check
         page.locator("#engRenderBox").scroll_into_view_if_needed()
         page.select_option("#stu_res", "1080")
@@ -257,6 +343,8 @@ try:
         sp.run(["ffmpeg","-v","error","-y","-ss","20","-i",str(out_dir/"Edited - full video.mp4"),"-frames:v","1","-vf","scale=640:-2",str(OUT/"r-main.png")])
         sp.run(["ffmpeg","-v","error","-y","-ss","3","-i",str(reel),"-frames:v","1","-vf","scale=360:-2",str(OUT/"r-reel.png")])
         assert (out_dir / "Edited - chapters.txt").read_text().startswith("0:00"), "chapters file"
+        for extra in ("Edited - full video (WhatsApp).mp4", "Edited - full video (square).mp4"):
+            assert (out_dir / extra).exists(), extra
         assert (out_dir / "Edited - full video.srt").exists()
         for f in ("Edited - full video.vtt", "Edited - YouTube.txt", "Edited - timeline for DaVinci Resolve.fcpxml",
                   "Edited - cut list.edl", "Edited - project.json"):

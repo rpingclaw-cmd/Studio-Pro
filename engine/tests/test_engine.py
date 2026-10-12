@@ -218,3 +218,37 @@ def test_fastest_decoder_is_measured_once(eng, media, monkeypatch):
     assert M.best_decoder(ctx, media["video"]) == [] and not ctx.logs  # remembered, not measured again
     assert M.proxy_fps({"avg_frame_rate": "60/1"}) == "30" and M.proxy_fps({"avg_frame_rate": "60000/1001"}) == "30000/1001"
     assert M.proxy_fps({"avg_frame_rate": "30/1"}) == "30"
+
+
+def test_keep_whole_recording(eng, media, synced):
+    """The recorder started 3.2 s before the camera: with 'keep the whole recording' the finished video starts
+    with those 3.2 s of speech (picture filled), and the rest stays in lip sync."""
+    total, A = media["video_s"], media["A"]
+    pre = A / media["B"]
+    p = params(media, synced, keep_all=True, keep=[[-pre, 30.0], [33.0, total - 1]],
+               settings={"res": "orig", "enc": "auto", "fill": "title", "fill_title": "Before the camera"})
+    r = run(eng, "render", p)
+    qc = r["qc"]
+    assert qc["duration_ok"], qc["text"]
+    final = Path(r["outputs"][0])
+    dur = float(probe(final)["format"]["duration"])
+    assert abs(dur - (pre + 30.0 + (total - 1 - 33.0))) < 0.1, dur
+    measured = [l for l in qc["lipsync"] if l.get("ok") is not None]
+    assert measured and all(abs(l["offset_ms"]) < 5 for l in measured), qc["text"]
+    # the first seconds of the finished sound are the recorder's speech from before the camera started
+    from studio_engine.syncer import xcorr
+    out16 = final.with_name("ka16.wav")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", final, "-t", "3", "-ac", "1", "-ar", "16000", out16], check=True)
+    rec16 = final.with_name("rec16.wav")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", media["audio"], "-t", "6", "-ac", "1", "-ar", "16000", rec16], check=True)
+    from studio_engine.syncer import read_window
+    y, rate, _ = read_window(out16, 0.5, 2.0)
+    x, _, _ = read_window(rec16, 0.0, 5.0)
+    lag, conf = xcorr(y, x, 0, len(x) - len(y), phat=0.8)
+    start_v = round(-pre * 30) / 30  # the finished video starts at this video time (whole frames)
+    want = A + media["B"] * (start_v + 0.5)  # recorder time heard at output second 0.5
+    assert conf >= 4 and abs(lag / rate - want) < 0.003, (lag / rate, want, conf)
+    edl = (final.parent / "Edited - cut list.edl").read_text()
+    assert "BL" in edl.splitlines()[3]  # first event: no camera picture
+    xml = (final.parent / "Edited - timeline for DaVinci Resolve.fcpxml").read_text()
+    assert "<gap " in xml

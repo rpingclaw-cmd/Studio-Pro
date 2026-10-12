@@ -34,8 +34,17 @@ explain in plain words, give exact clicks, never leave half-finished state. Quot
    Intel UHD 620 (Quick Sync) + NVIDIA 940MX (no NVENC), Windows 11, Smart App Control may be on (unsigned apps may be blocked).
 4. Check documentation for versions, licences and APIs; don't guess. Licence: GPL-3.0 (FFmpeg GPL build, RVM GPL-3.0).
 
-## Roadmap (owner's goals)
-Phase 1 installable app ✓ → Phase 2 auto sync by words (transcribe both tracks, word-level match + lip-sync check), fill
-picture gaps when audio started first, hear the recorder audio in the editor → Phase 3 background removal/replacement
-(RVM, work in PSM branch `wip-background-framing`), own framing box / crop the lower body → Phase 4 pro tools (multi-track,
-titles, transitions, keyframes, effects, mixer, colour wheels, multicam, export presets), local transcription (faster-whisper).
+## Features by module (engine)
+transcribe.py (faster-whisper, models from this repo's `models-v1` release via models.py) · syncer.py (sound sync +
+word check / word fallback) · audio.span / render.fill_covers ("keep the whole recording": timeline from -pre to
+dur+post; cleaned sound starts at -pre; hard-cut fill covers; exports use gaps / BL events) · matte.py (RVM person
+cut-out, GPL-3.0 model from its GitHub release) + render.Pictures background/rect · pro.py (titles ASS per piece with
+bundled DejaVu font, music + ducking + relevel, extra copies, LUT) · picture.plan xcut pieces (dissolve at cuts),
+Ken Burns via sendcmd w/h, colour wheels = lutrgb Lift/Gamma/Gain.
+Tests: engine/tests (test_engine, test_stage2-4, test_transcribe, test_background, test_pro), tools/tests (node + Playwright).
+Local test helpers: STUDIO_MODELS_DIR (whisper models), STUDIO_RVM_MODEL, STUDIO_TEST_FACE.
+
+## Roadmap
+Done: phase 1 installable app; phase 2 local transcription, word-checked sync, keep whole recording; phase 3 background
+replacement, own framing box; phase 4 titles, music/ducking, dissolves, colour wheels/looks/LUT, slow zoom, voice level per
+clip, extra copies. Next ideas: code signing (Smart App Control), Mac build, multicam, more transitions, keyframe curves.

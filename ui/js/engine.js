@@ -61,7 +61,7 @@ function engShow(){
 function engHwRender(){const h=ENG.hw;if(!h)return;$('#engHw').innerHTML=h.summary.map(esc).join('<br>')}
 
 /* ---------- jobs ---------- */
-const JOB_NAMES={report:'Check files',prepare:'Prepare (preview + sound)',sync:'Find sync',clean:'Clean the sound',preview:'Sound preview',render:'Make the final files'};
+const JOB_NAMES={report:'Check files',prepare:'Prepare (preview + sound)',sync:'Find sync',clean:'Clean the sound',preview:'Sound preview',render:'Make the final files',analyse:'Listen for pauses and breaths',faces:'Find the speaker',frame:'Preview still',thumbs:'Thumbnail pictures',transcribe:'Transcribe',matte:'Find the person (background)'};
 function engJobsRender(){
   const box=$('#engJobs');const list=ENG.jobs.slice(0,6);
   if(!list.length){box.innerHTML='<p class="status">No jobs yet.</p>';return}
@@ -91,7 +91,7 @@ async function engAfterResume(job){
 function snd(){return {...SND_DEFAULTS,...(STU.settings.snd||{})}}
 function engParams(extra){
   const sep=STU.settings.separate&&STU.engAudio;
-  return {video:STU.engVideo,audio:sep?STU.engAudio:null,sync:sep?(STU.sync||null):null,sound:snd(),...extra};
+  return {video:STU.engVideo,audio:sep?STU.engAudio:null,sync:sep?(STU.sync||null):null,sound:snd(),keep_all:!!(sep&&STU.settings.keepAll),...extra};
 }
 function engNeed(sync){
   if(!STU.engVideo){alert('Choose your video first (step 1).');return false}
@@ -141,7 +141,7 @@ async function engSync(onStatus){
   if(!STU.engPrep||!STU.engPrep.audio_wav)throw new Error('Press “Prepare” in step 1 first.');
   onStatus('The engine is finding the sync…');
   const r=await engRun('sync',{video_wav:STU.engPrep.video_wav,audio_wav:STU.engPrep.audio_wav});
-  return {a:r.a,b:r.b,conf:r.conf,engine:true,residual_ms:r.residual_ms,drift_ppm:r.drift_ppm,points:r.points,message:r.message};
+  return {a:r.a,b:r.b,conf:r.conf,engine:true,residual_ms:r.residual_ms,drift_ppm:r.drift_ppm,points:r.points,message:r.message,audio_dur:r.audio_dur,video_dur:r.video_dur,words:r.words||null};
 }
 
 /* ---------- step 4: sound ---------- */
@@ -164,14 +164,14 @@ async function engPreview(){
 }
 async function engClean(){
   if(!engNeed(true))return;stuSay('#engSoundStatus','Cleaning the whole recording (see progress above)…');
-  try{const r=await engRun('clean',engParams());STU.engClean=r.clean_audio||null;stuSave();if(typeof edAudioSrc==='function')edAudioSrc();stuSay('#engSoundStatus',r.message+(window.studioApp?' You can now hear it in the Editor (Sound: Recorder).':''))}catch(e){stuSay('#engSoundStatus',e.message)}
+  try{const r=await engRun('clean',engParams());STU.engClean=r.clean_audio||null;STU.engCleanStart=r.start||0;stuSave();if(typeof edAudioSrc==='function')edAudioSrc();stuSay('#engSoundStatus',r.message+(window.studioApp?' You can now hear it in the Editor (Sound: Recorder).':''))}catch(e){stuSay('#engSoundStatus',e.message)}
 }
 
 /* ---------- step 8: render + quality check ---------- */
 function engRenderParams(){
   const keep=keepSegments(),hasText=STU.words.length>0;
   const reels=STU.reels.map((r,i)=>{const segs=clipSegs(keep,r.start,r.end);return segs.length?{name:`Reel ${String(i+1).padStart(2,'0')} - ${safeName(r.title)}`,start:r.start,end:r.end,segs,ass:STU.settings.reelCaps&&hasText?picReelAss(segs):''}:null}).filter(Boolean);
-  return engParams({keep,reels,srt:hasText?makeSrt(keep):'',settings:{res:STU.settings.res,enc:STU.settings.enc,reelRes:STU.settings.reelRes,reelCaps:STU.settings.reelCaps,xfade_ms:STU.settings.xfade??40,...picRenderSettings()},covers:picCovers(),youtube:typeof ytFullText==='function'?ytFullText():'',chapters:typeof chaptersText==='function'?chaptersText():''});
+  return engParams({keep,reels,srt:hasText?makeSrt(keep):'',settings:{extras:STU.settings.extras||[],fill:STU.settings.fill,fill_title:STU.settings.fillTitle,fill_file:STU.settings.fillFile,res:STU.settings.res,enc:STU.settings.enc,reelRes:STU.settings.reelRes,reelCaps:STU.settings.reelCaps,xfade_ms:STU.settings.xfade??40,...picRenderSettings()},covers:picCovers(),titles_ass:typeof titlesAss==='function'?titlesAss():'',voice_gains:STU.gains||[],music:(STU.music&&STU.music.file)?{file:STU.music.file,db:STU.music.db??-18,duck:STU.music.duck!==false,duck_db:STU.music.duckDb??12,fade_in:STU.music.fadeIn??2,fade_out:STU.music.fadeOut??3,reels:!!STU.music.reels}:null,youtube:typeof ytFullText==='function'?ytFullText():'',chapters:typeof chaptersText==='function'?chaptersText():''});
 }
 async function engRender(){
   if(!engNeed(true))return;

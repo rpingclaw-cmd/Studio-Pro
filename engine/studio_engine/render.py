@@ -4,6 +4,7 @@ Lip sync stays exact because every cut is snapped to a whole video frame, the pi
 without sound, and the sound is assembled once, sample-exact, from the cleaned audio and added at the end.
 """
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -12,17 +13,19 @@ from pathlib import Path
 
 import numpy as np
 
-from . import audio, config, exports, faces, ff, framing, hardware, media, picture, syncer
+from . import audio, config, exports, faces, ff, framing, hardware, matte, media, picture, pro, syncer
 from .jobs import Ctx, JobError, file_sig, key_of, mark_done, read_done, step_done
 from .wavio import Writer, open_pcm16
 
 FADE_S = 0.005
 
 
-def frames_of(keep: list, fr: Fraction, total_frames: int) -> list[tuple[int, int]]:
+def frames_of(keep: list, fr: Fraction, total_frames: int, lo: int = 0) -> list[tuple[int, int]]:
+    """Kept parts (seconds) -> frame ranges between lo (negative: before the camera started, when the whole
+    recording is kept) and total_frames (which then includes the time after the camera stopped)."""
     out = []
     for s, e in keep:
-        a = max(0, int(round(float(s) * fr)))
+        a = max(lo, int(round(float(s) * fr)))
         b = min(total_frames, int(round(float(e) * fr)))
         if b - a < 2:
             continue
@@ -78,9 +81,11 @@ def geometry(v: dict, kind: str, st: dict, reel_h: int) -> dict:
     return {"W": W, "H": H, "OW": OW, "OH": OH, "aspect": W / H, "mode": "crop", "punch": float(st.get("punch", 1.0))}
 
 
-def look(v: dict, st: dict, gains) -> str:
-    """After framing: HDR -> normal screens, colour, pixel format."""
+def look(v: dict, st: dict, gains, lut: str | None = None) -> str:
+    """After framing: HDR -> normal screens, colour (incl. colour wheels), the owner's LUT, pixel format."""
     f = [x for x in (media.tonemap_chain(v), picture.colour_filter(st, gains)) if x]
+    if lut:
+        f.append(f"lut3d=file={lut}:interp=tetrahedral")
     f.append("format=yuv420p")
     return ",".join(f)
 
@@ -89,8 +94,15 @@ class Pictures:
     """Builds the ffmpeg picture filter for any stretch of the source, with framing, punch-in and colour."""
 
     def __init__(self, v, kind, st, reel_h, faces_d, segs, fr):
-        self.v, self.st, self.fr, self.segs = v, st, fr, segs
+        self.v, self.st, self.fr, self.segs, self.kind = v, st, fr, segs, kind
         self.g = geometry(v, kind, st, reel_h)
+        self.cwd = None  # folder ffmpeg runs in (files in the filter are given relative to it)
+        self.n_calls = 0
+        bg = st.get("background") or {}
+        self.bg = bg if bg.get("mode") in ("blur", "colour", "image") and st.get("_matte") else None
+        if self.bg:
+            mi = media.stream(ff.probe(st["_matte"]), "video")
+            self.matte_wh = (int(mi["width"]), int(mi["height"]))
         g = self.g
         self.framer = framing.Framer(faces_d, g["W"], g["H"], g["aspect"])
         self.segs_s = [(float(Fraction(a) / fr), float(Fraction(b) / fr)) for a, b in segs]
@@ -113,20 +125,108 @@ class Pictures:
             bg_h = int(round(g["OW"] * g["H"] / g["W"] / 2)) * 2
             cy = (yy[0] + framing.LEAD * ch) / g["H"]  # face height in the picture (0..1)
             y = int(min(max(0, cy * bg_h - g["OH"] / 2), max(0, bg_h - g["OH"])))
-            col = picture.colour_filter(self.st, gains)
+            col = ",".join(x for x in (picture.colour_filter(self.st, gains),
+                                       f"lut3d=file={self.rel(self.st['_lut'])}" if self.st.get("_lut") else "") if x)
             return (f"scale=-2:{g['OH']}:flags=lanczos,{media.tonemap_chain(self.v) or 'null'},split=2[a][b];"
                     f"[a]scale={g['OW']}:{bg_h},crop={g['OW']}:{g['OH']}:0:{y},boxblur=luma_radius=30:luma_power=2,"
                     f"eq=brightness=-0.06[bg];[bg][b]overlay=(W-w)/2:0" + (f",{col}" if col else "") + ",format=yuv420p",
                     None)
         z = self.zooms[part] if part >= 0 else 1.0
-        cw, ch, x, y = self.framer.at(times, z, fy)
-        moving = bool((x != x[0]).any() or (y != y[0]).any())
+        rect = self.rect_for(a, b) if self.kind != "reel" else None
+        if rect:
+            cw, ch, x, y = self.fixed(rect, len(times))
+        else:
+            cw, ch, x, y = self.framer.at(times, z, fy)
+        ww = hh = None
+        kb = self.kb_for(a, b) if part >= 0 else 0.0
+        if kb:  # slow zoom ("Ken Burns") through this part: the window shrinks a little, frame by frame
+            p0, plen = self.segs[part][0], max(1, self.segs[part][1] - self.segs[part][0])
+            zz = 1 + kb * np.clip((np.arange(n) + src - p0) / plen, 0, 1)
+            ww = (np.round(cw / zz / 2) * 2).astype(int)
+            hh = (np.round(ch / zz / 2) * 2).astype(int)
+            x, y = x + (cw - ww) // 2, y + (ch - hh) // 2
+            cw, ch = int(ww[0]), int(hh[0])
+        moving = bool((x != x[0]).any() or (y != y[0]).any() or (ww is not None and (ww != ww[0]).any()))
         crop = f"crop@fr=w={cw}:h={ch}:x={x[0]}:y={y[0]}"
         scale = f"scale={g['OW']}:{g['OH']}:flags=lanczos"
-        lk = look(self.v, self.st, gains)
-        if moving and cmd_name:
-            return f"sendcmd=f={cmd_name},{crop},{scale},{lk}", framing.sendcmd_text(fr, x, y)
-        return f"{crop},{scale},{lk}", None
+        lk = look(self.v, self.st, gains, self.rel(self.st["_lut"]) if self.st.get("_lut") else None)
+        cmd = framing.sendcmd_text(fr, x, y, w=ww, h=hh) if moving and cmd_name else None
+        pre = f"sendcmd=f={cmd_name}," if cmd else ""
+        if not self.bg:
+            return f"{pre}{crop},{scale},{lk}", cmd
+        # background replacement: the person (from the matte) over blur / a colour / a picture
+        mw, mh = self.matte_wh
+        sx, sy = mw / g["W"], mh / g["H"]
+        mx, my = np.round(x * sx).astype(int), np.round(y * sy).astype(int)
+        mcw, mch = max(2, int(round(cw * sx))), max(2, int(round(ch * sy)))
+        if cmd:
+            mww = None if ww is None else np.maximum(2, np.round(ww * sx).astype(int))
+            mhh = None if hh is None else np.maximum(2, np.round(hh * sy).astype(int))
+            cmd += framing.sendcmd_text(fr, np.minimum(mx, mw - (mww if mww is not None else mcw)),
+                                        np.minimum(my, mh - (mhh if mhh is not None else mch)), "crop@fm", w=mww, h=mhh)
+        self.n_calls += 1
+        u = self.n_calls
+        rel = self.rel
+        OW, OH = g["OW"], g["OH"]
+        al = (f"movie=filename={rel(self.st['_matte'])}:sp={times[0]:.6f},setpts=PTS-STARTPTS,"
+              f"crop@fm=w={mcw}:h={mch}:x={min(mx[0], mw - mcw)}:y={min(my[0], mh - mch)},"
+              f"scale={OW}:{OH}:flags=bicubic,format=gray[al{u}]")
+        mode = self.bg["mode"]
+        if mode == "blur":
+            bgc = f"[f{u}b]scale={max(16, OW // 10 // 2 * 2)}:-2,boxblur=8:2,scale={OW}:{OH},eq=brightness=-0.04[bg{u}]"
+            head = f"{pre}{crop},{scale},{lk},split=2[f{u}a][f{u}b]"
+        else:
+            head = f"{pre}{crop},{scale},{lk}[f{u}a]"
+            col = str(self.bg.get("colour") or "#20303c").lstrip("#")
+            base = f"color=c=0x{col}:s={OW}x{OH}:r={fr}"
+            if mode == "image" and self.st.get("_bgimg"):
+                bgc = (f"{base}[bb{u}];movie=filename={rel(self.st['_bgimg'])},scale={OW}:{OH}:"
+                       f"force_original_aspect_ratio=increase,crop={OW}:{OH},setsar=1,format=yuv420p[bi{u}];"
+                       f"[bb{u}][bi{u}]overlay=eof_action=repeat,format=yuv420p[bg{u}]")
+            else:
+                bgc = f"{base},format=yuv420p[bg{u}]"
+        return (f"{head};{al};{bgc};[f{u}a][al{u}]alphamerge[fa{u}];"
+                f"[bg{u}][fa{u}]overlay=shortest=1:format=auto,setsar=1,format=yuv420p"), cmd
+
+    def rel(self, f: str) -> str:
+        """A file named inside a filter: relative to the folder ffmpeg runs in (no drive letters or colons)."""
+        return os.path.relpath(f, self.cwd or ".").replace("\\", "/")
+
+    def kb_for(self, a: float, b: float) -> float:
+        """Slow zoom for this part (a framing section with 'kb': how much it zooms in over the part)."""
+        best = None
+        for o in self.st.get("framing_overrides") or []:
+            ov = min(b, float(o["end"])) - max(a, float(o["start"]))
+            if o.get("kb") and ov > 0 and (best is None or ov > best[0]):
+                best = (ov, float(o["kb"]))
+        return min(0.3, max(0.0, best[1])) if best else 0.0
+
+    def rect_for(self, a: float, b: float) -> dict | None:
+        """The owner's own framing box: for this part (from a section override) or for the whole video."""
+        if self.g["mode"] != "crop":
+            return None
+        best = None
+        for o in self.st.get("framing_overrides") or []:
+            r = o.get("rect")
+            ov = min(b, float(o["end"])) - max(a, float(o["start"]))
+            if r and ov > 0 and (best is None or ov > best[0]):
+                best = (ov, r)
+        return best[1] if best else (self.st.get("rect") or None)
+
+    def fixed(self, rect: dict, n: int):
+        """Box given as fractions of the picture (x, y = top-left, w = width); its height follows the output shape."""
+        g = self.g
+        W, H, asp = g["W"], g["H"], g["aspect"]
+        cw = max(32.0, float(rect.get("w", 1)) * W)
+        ch = cw / asp
+        if ch > H:
+            ch, cw = H, H * asp
+        if cw > W:
+            cw, ch = W, W / asp
+        cw, ch = int(cw) // 2 * 2, int(ch) // 2 * 2
+        x = int(min(max(0, float(rect.get("x", 0)) * W), W - cw))
+        y = int(min(max(0, float(rect.get("y", 0)) * H), H - ch))
+        return cw, ch, np.full(n, x), np.full(n, y)
 
 
 def encode_piece(ctx: Ctx, p: dict, args_in: list, vf: str, n: int, fr: Fraction, venc: list, gop: str, out: Path,
@@ -248,19 +348,26 @@ def render_pieces(ctx: Ctx, p: dict, video: Path, v: dict, fr: Fraction, segs, d
     """Plan the pieces (framing, punch-ins, covers with dissolves) and encode each one (resumable)."""
     d.mkdir(parents=True, exist_ok=True)
     pics = Pictures(v, kind, st, reel_h, faces_d, segs, fr)
+    pics.cwd = d
     venc = vcodec(enc, kind, pics.g["OH"])
     gop = str(int(round(float(fr) * 2)))
     total = sum(b - a for a, b in segs)
+    covers = list(covers) + list(p.get("_fill") or [])  # + the stretches with no camera picture
     cov_idx = picture.output_ranges_idx(segs, covers, fr) if covers else []
     cov_out = [(a, b) for a, b, _ in cov_idx]
-    pieces = picture.plan(segs, cov_out, fr)
+    hard = frozenset(ci for ci, (_, _, idx) in enumerate(cov_idx) if covers[idx].get("hard"))
+    pieces = picture.plan(segs, cov_out, fr, hard, xcuts=st.get("cut_style") == "dissolve" and kind == "full",
+                          src_frames=p.get("_src_frames"))
+    titles = p.get("titles_ass") if kind == "full" else None
     base_key = {"v": file_sig(video), "fr": str(fr), "g": pics.g, "enc": venc, "ver": 2,
-                "st": {k: st.get(k) for k in ("layout", "res", "punch", "reelPunch", "colour", "framing_overrides")}}
+                "st": {k: st.get(k) for k in ("layout", "res", "punch", "reelPunch", "colour", "framing_overrides", "rect",
+                                         "background")},
+                "bgfiles": [file_sig(Path(st[k])) for k in ("_matte", "_bgimg") if st.get(k)]}
     clip_files = {}
     cover_info = []
-    avoid = [[float(c["start"]), float(c["end"])] for c in covers]
+    avoid = [[float(c["start"]), float(c["end"])] for c in covers if not c.get("hard")]
     for ci in range(len(cov_out)):
-        n = picture.cover_clip_frames(cov_out, ci, fr, total)
+        n = picture.cover_clip_frames(cov_out, ci, fr, total, hard)
         cover = covers[cov_idx[ci][2]]
         f = d / f"cover_{ci + 1}.mp4"
         key = key_of({**base_key, "cover": cover, "n": n, "faces": bool(faces_d), "ana": bool(analysis)})
@@ -283,6 +390,16 @@ def render_pieces(ctx: Ctx, p: dict, video: Path, v: dict, fr: Fraction, segs, d
         elif pc.kind == "cover":
             vf, cmd = "null", None
             args = ["-ss", f"{float(Fraction(pc.coff) / fr):.6f}", "-i", clip_files[pc.cov].name]
+        elif pc.kind == "xcut":  # smooth dissolve across a cut: the end of one part mixes into the next
+            va, _ = pics.vf(pc.src, pc.n, pc.part, None)
+            vb, _ = pics.vf(pc.extra["src2"], pc.n, pc.extra["part2"], None)
+            o, L = pc.extra["tpos"], pc.extra["tlen"]
+            k = f"min(1\\,max(0\\,(T*{float(fr):.4f}+{o}+0.5)/{L}))"
+            vf = (f"[0:v]{va},setpts=PTS-STARTPTS[m0];[1:v]{vb},setpts=PTS-STARTPTS[m1];"
+                  f"[m0][m1]blend=all_expr='A*(1-{k})+B*{k}',format=yuv420p[vout]")
+            cmd = None
+            args = ["-ss", start, "-i", str(video), "-ss", f"{float(Fraction(pc.extra['src2']) / fr):.6f}", "-i", str(video)]
+            cg = True
         else:  # dissolve between the main picture and the cover picture
             mv, cmd = pics.vf(pc.src, pc.n, pc.part, cmd_name)
             o, L = pc.extra["tpos"], pc.extra["tlen"]
@@ -293,6 +410,9 @@ def render_pieces(ctx: Ctx, p: dict, video: Path, v: dict, fr: Fraction, segs, d
             args = ["-ss", start, "-i", str(video), "-ss", f"{float(Fraction(pc.coff) / fr):.6f}", "-i",
                     clip_files[pc.cov].name]
             cg = True
+        if titles:  # titles / lower thirds drawn onto the parts they cover
+            vf = pro.add_to_filter(vf, pro.titles_filter(d, titles, float(Fraction(done) / fr),
+                                                         float(Fraction(done + pc.n) / fr)), cg)
         key = key_of({**base_key, "pc": [pc.kind, pc.n, pc.part, pc.src, pc.cov, pc.coff, pc.extra], "vf": vf,
                       "cmd": key_of(cmd) if cmd else None,
                       "clip": read_done(clip_files[pc.cov]).get("key") if pc.cov >= 0 else None})
@@ -310,7 +430,8 @@ def render_pieces(ctx: Ctx, p: dict, video: Path, v: dict, fr: Fraction, segs, d
     return lst
 
 
-def assemble_audio(clean: Path, segs, fr: Fraction, out: Path, xfade_ms: float = 40.0):
+def assemble_audio(clean: Path, segs, fr: Fraction, out: Path, xfade_ms: float = 40.0, pre: float = 0.0,
+                   gains: list | None = None):
     """Cut the cleaned sound exactly like the picture. At every cut the two sides cross-fade (equal power,
     centred on the cut, using the sound just past each edge), so joins are smooth and click-free while the
     total length - and lip sync - stay exact."""
@@ -331,13 +452,17 @@ def assemble_audio(clean: Path, segs, fr: Fraction, out: Path, xfade_ms: float =
     for a, b in segs:
         o0 = int(round(Fraction(cum) / fr * rate))
         cum += b - a
-        parts.append((int(round(Fraction(a) / fr * rate)), int(round(Fraction(cum) / fr * rate)) - o0))
+        parts.append((int(round((Fraction(a) / fr + Fraction(pre).limit_denominator(1000000)) * rate)),
+                      int(round(Fraction(cum) / fr * rate)) - o0))  # (the cleaned sound starts at video time -pre)
     want = int(round(float(xfade_ms) / 2000 * rate)) if xfade_ms and xfade_ms > 0 else 0
     halves = [min(want, parts[k][1] // 3, parts[k + 1][1] // 3) for k in range(len(parts) - 1)]
     for k, (s0, n) in enumerate(parts):
         left = halves[k - 1] if k > 0 else 0
         right = halves[k] if k < len(parts) - 1 else 0
         body = src(s0 + left, s0 + n - right)
+        g_k = 10 ** (gains[k] / 20) if gains and gains[k] else 1.0  # the voice level set for this clip
+        if g_k != 1.0:
+            body *= g_k
         if want == 0 and len(parts) > 1 and n > 2 * int(FADE_S * rate):  # no cross-fade: tiny fades, no clicks
             f = int(FADE_S * rate)
             ramp = np.linspace(0.0, 1.0, f, dtype=np.float32)[:, None]
@@ -350,7 +475,8 @@ def assemble_audio(clean: Path, segs, fr: Fraction, out: Path, xfade_ms: float =
             h = right
             ns0 = parts[k + 1][0]
             ang = np.linspace(0.0, np.pi / 2, 2 * h, dtype=np.float32)[:, None]
-            w.write(src(s0 + n - h, s0 + n + h) * np.cos(ang) + src(ns0 - h, ns0 + h) * np.sin(ang))
+            g_n = 10 ** (gains[k + 1] / 20) if gains and gains[k + 1] else 1.0
+            w.write(src(s0 + n - h, s0 + n + h) * (np.cos(ang) * g_k) + src(ns0 - h, ns0 + h) * (np.sin(ang) * g_n))
     w.close()
     ff.finish(tmp, out)
 
@@ -377,7 +503,7 @@ def _pcm16k(path, start: float, dur: float) -> np.ndarray:
     return np.frombuffer(r.stdout, "<i2").astype(np.float32) / 32768.0
 
 
-def lipsync_qc(final: Path, cam16: Path, segs, fr: Fraction) -> list[dict]:
+def lipsync_qc(final: Path, cam16: Path, segs, fr: Fraction, src_frames: int | None = None) -> list[dict]:
     """At 10% / 50% / 90% of the finished video, compare its sound with the camera's own sound at the same
     picture frame. A perfect render shows 0 ms (plus whatever sync error the recording itself had)."""
     starts, cum = [], 0
@@ -394,6 +520,12 @@ def lipsync_qc(final: Path, cam16: Path, segs, fr: Fraction) -> list[dict]:
             o_s, len_s = float(Fraction(o) / fr), float(Fraction(b - a) / fr)
             if len_s < W + 1:
                 continue
+            if src_frames is not None:  # only parts that have the camera picture (and its sound)
+                cs, ce = max(a, 0), min(b, src_frames)
+                if (ce - cs) / fr < W + 2 * S + 1:
+                    continue
+                o_s, len_s = o_s + float(Fraction(cs - a) / fr), float(Fraction(ce - cs) / fr)
+                a = cs
             t = min(max(want, o_s + 0.5), o_s + len_s - W - 0.5)
             dist = abs(t - want)
             if best is None or dist < best[0]:
@@ -444,6 +576,20 @@ def fmt(t: float) -> str:
     return f"{int(t // 3600)}:{int(t % 3600 // 60):02d}:{t % 60:05.2f}"
 
 
+def fill_covers(st: dict, pre: float, post: float, vdur: float) -> list[dict]:
+    """Covers for the stretches where only the recorder was running: the picture is filled (listening shots of
+    the speaker, a title card, or the owner's photo); the sound carries on. Hard cuts at their edges."""
+    mode = st.get("fill") or "auto"
+    base = {"mode": mode if mode in ("auto", "title", "file") else "auto", "hard": True,
+            "title": st.get("fill_title") or "", "file": st.get("fill_file") or None, "from": None}
+    out = []
+    if pre > 0:
+        out.append({**base, "start": -pre - 1.0, "end": 0.0})  # (a little extra: rounding to frames)
+    if post > 0:
+        out.append({**base, "start": vdur, "end": vdur + post + 1.0})
+    return out
+
+
 def job_render(ctx: Ctx, p: dict) -> dict:
     video = media._need(p.get("video"), "video")
     vinfo = ff.probe(video)
@@ -453,11 +599,18 @@ def job_render(ctx: Ctx, p: dict) -> dict:
     vdur = media.duration(vinfo)
     fr = Fraction(media.output_fps(v))
     total_frames = int(vdur * fr)
-    keep = p.get("keep") or [[0, vdur]]
-    segs = frames_of(keep, fr, total_frames)
+    st = p.get("settings") or {}
+    _background_files(video, st)
+    st["_lut"] = pro.lut_file(video, st.get("colour"))
+    p["_src_frames"] = total_frames
+    # 'keep the whole recording': the timeline also covers the recorder before / after the camera
+    pre, post = audio.span(p, vdur)
+    pre_f, post_f = int(round(pre * fr)), int(round(post * fr))
+    p["_fill"] = fill_covers(st, pre, post, float(Fraction(total_frames) / fr))
+    keep = p.get("keep") or [[-pre, vdur + post]]
+    segs = frames_of(keep, fr, total_frames + post_f, lo=-pre_f)
     if not segs:
         raise JobError("Nothing left to render — everything is cut.")
-    st = p.get("settings") or {}
     hw = hardware.report()
     enc = st.get("enc") or "auto"
     enc = hw["best_encoder"] if enc == "auto" else enc
@@ -493,7 +646,17 @@ def job_render(ctx: Ctx, p: dict) -> dict:
     ctx.progress(0, "Putting the sound together…")
     full_wav = wd / "edited_audio.wav"
     xf = float(st.get("xfade_ms", 40) or 0)
-    assemble_audio(clean, segs, fr, full_wav, xf)
+    assemble_audio(clean, segs, fr, full_wav, xf, pre=pre, gains=pro.voice_gains(p, segs, fr))
+    music = p.get("music") or {}
+    if music.get("file"):
+        ctx.progress(0.3, "Mixing the background music…")
+        mixed = wd / "edited_audio_music.wav"
+        pro.mix_music(ctx, full_wav, music, mixed, edited_s)
+        full_wav = mixed
+    if music.get("file") or any(g.get("db") for g in (p.get("voice_gains") or [])):
+        leveled = wd / "edited_audio_level.wav"
+        pro.relevel(ctx, full_wav, audio.settings(p)["lufs"], edited_s, leveled)
+        full_wav = leveled
     final = out_dir / "Edited - full video.mp4"
     concat_mux(ctx, lst, full_wav, final, edited_s, "Joining the full video…")
     ctx.progress(0.6, "Making the podcast files…")
@@ -514,8 +677,8 @@ def job_render(ctx: Ctx, p: dict) -> dict:
     chap = exports.parse_chapters(p.get("chapters") or "")
     (out_dir / "Edited - timeline for DaVinci Resolve.fcpxml").write_text(
         exports.fcpxml(video, clean, segs, fr, W0, H0, total_frames, g_full["OW"], g_full["OH"],
-                       name=video.stem + " (edited)", chapters=chap), encoding="utf-8")
-    (out_dir / "Edited - cut list.edl").write_text(exports.edl(video, segs, fr), encoding="utf-8")
+                       name=video.stem + " (edited)", chapters=chap, pre_f=pre_f, post_f=post_f), encoding="utf-8")
+    (out_dir / "Edited - cut list.edl").write_text(exports.edl(video, segs, fr, src_frames=total_frames), encoding="utf-8")
     proj = {k: p.get(k) for k in ("video", "audio", "sync", "sound", "keep", "covers", "settings", "chapters")}
     (out_dir / "Edited - project.json").write_text(json.dumps(proj, indent=1), encoding="utf-8")
     outputs = [str(final), str(out_dir / "Edited - full audio.mp3"), str(out_dir / "Edited - full audio.wav")]
@@ -523,14 +686,20 @@ def job_render(ctx: Ctx, p: dict) -> dict:
     lo = 0.12 + w_full * 0.9
     for ri, r in enumerate(reels):
         ctx.stage(lo + (0.95 - lo) * ri / len(reels), lo + (0.95 - lo) * (ri + 1) / len(reels))
-        rsegs = frames_of(r.get("segs") or [[r["start"], r["end"]]], fr, total_frames)
+        rsegs = frames_of(r.get("segs") or [[r["start"], r["end"]]], fr, total_frames + post_f, lo=-pre_f)
         if not rsegs:
             continue
         rd = wd / f"reel_{ri + 1}"
         rl = render_pieces(ctx, p, video, v, fr, rsegs, rd, "reel", enc, st, reel_h, f"Reel {ri + 1}",
                            faces_d, None, [])
         rwav = rd / "audio.wav"
-        assemble_audio(clean, rsegs, fr, rwav, xf)
+        assemble_audio(clean, rsegs, fr, rwav, xf, pre=pre, gains=pro.voice_gains(p, rsegs, fr))
+        if music.get("file") and music.get("reels"):
+            rmix = rd / "audio_music.wav"
+            rdur = float(Fraction(sum(b - a for a, b in rsegs)) / fr)
+            pro.mix_music(ctx, rwav, music, rmix, rdur)
+            rwav = rd / "audio_level.wav"
+            pro.relevel(ctx, rmix, audio.settings(p)["lufs"], rdur, rwav)
         name = "".join(c for c in str(r.get("name") or f"Reel {ri + 1:02d}") if c not in '\\/:*?"<>|').strip()[:80]
         rout = out_dir / f"{name}.mp4"
         ass = None
@@ -540,13 +709,16 @@ def job_render(ctx: Ctx, p: dict) -> dict:
         concat_mux(ctx, rl, rwav, rout, float(Fraction(sum(b - a for a, b in rsegs)) / fr),
                    f"Reel {ri + 1}: finishing…", burn_ass=ass, enc=enc, out_h=reel_h)
         outputs.append(str(rout))
+    # extra copies (export presets): small for WhatsApp, square for the Instagram / Facebook feed
+    for x in pro.extra_copies(ctx, final, st.get("extras") or [], edited_s):
+        outputs.append(str(x))
     # 4. quality check
     ctx.stage(0.95, 1.0)
     ctx.progress(0, "Quality check: lip sync at 3 points…")
     qc = {"lipsync": [], "expected_s": round(edited_s, 3)}
     cam16 = media.work_dir(str(video)) / "video_16k.wav"
     if cam16.exists():
-        qc["lipsync"] = lipsync_qc(final, cam16, segs, fr)
+        qc["lipsync"] = lipsync_qc(final, cam16, segs, fr, src_frames=total_frames)
     got = media.duration(ff.probe(final))
     qc["duration_s"] = round(got, 3)
     qc["duration_ok"] = abs(got - edited_s) < 0.1
@@ -592,6 +764,27 @@ def job_render(ctx: Ctx, p: dict) -> dict:
             "message": ("Finished ✓ — quality check passed." if qc_ok else "Finished — the quality check found something to look at (see below).")}
 
 
+def _background_files(video, st: dict):
+    """Background replacement needs the person cut-out (matte) and, for 'my picture', a copy of that picture
+    inside studio_work (so the filter can name it without drive letters)."""
+    bg = st.get("background") or {}
+    if bg.get("mode") not in ("blur", "colour", "image"):
+        return
+    m = matte.find(str(video))
+    if not m:
+        raise JobError("To change the background, first press “Find the person” in the Picture panel "
+                       "(it takes a while; it is done once per video).")
+    st["_matte"] = str(m)
+    if bg.get("mode") == "image":
+        src = Path(str(bg.get("file") or ""))
+        if not src.is_file():
+            raise JobError("Choose the background picture first (Picture panel → Background → Choose picture).")
+        dst = media.work_dir(str(video)) / ("background" + src.suffix.lower())
+        if not dst.exists() or dst.read_bytes() != src.read_bytes():  # (copy only when it changed: keeps finished parts)
+            shutil.copyfile(src, dst)
+        st["_bgimg"] = str(dst)
+
+
 def job_frame(ctx: Ctx, p: dict) -> dict:
     """One finished-look still (framing, punch-in, colour) at a moment of the source - to check before rendering."""
     video = media._need(p.get("video"), "video")
@@ -606,10 +799,13 @@ def job_frame(ctx: Ctx, p: dict) -> dict:
     zoom_part = bool(p.get("closeup"))
     w = int(5 * fr)  # parts around the moment (colour matching looks at a few seconds)
     segs = [(max(0, a - 3 * w), max(1, a - w)), (max(0, a - w), a + w)] if zoom_part else [(max(0, a - w), a + w)]
-    pics = Pictures(v, "full", st, 1920, faces.load(str(video)), segs, fr)
-    vf, _ = pics.vf(a, 1, len(segs) - 1, None)
+    _background_files(video, st)
+    st["_lut"] = pro.lut_file(video, st.get("colour"))
     d = media.work_dir(str(video)) / "frames"
     d.mkdir(exist_ok=True)
+    pics = Pictures(v, "full", st, 1920, faces.load(str(video)), segs, fr)
+    pics.cwd = d
+    vf, _ = pics.vf(a, 1, len(segs) - 1, None)
     for old in d.glob("*.jpg"):
         try:
             old.unlink()

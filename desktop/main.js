@@ -96,6 +96,7 @@ const PICK = {
   audio: [{ name: 'Audio', extensions: ['wav', 'mp3', 'm4a', 'aac', 'flac', 'ogg', 'opus', 'aif', 'aiff'] }],
   transcript: [{ name: 'Transcripts', extensions: ['txt', 'docx', 'srt', 'vtt'] }],
   cover: [{ name: 'Pictures and videos', extensions: ['jpg', 'jpeg', 'png', 'webp', 'mov', 'mp4', 'm4v'] }],
+  lut: [{ name: 'Looks (LUT files)', extensions: ['cube', '3dl'] }],
 };
 ipcMain.handle('pick', async (_e, kind) => {
   const r = await dialog.showOpenDialog(win, { properties: ['openFile'], filters: [...(PICK[kind] || []), { name: 'All files', extensions: ['*'] }] });

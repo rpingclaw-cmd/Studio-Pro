@@ -135,3 +135,16 @@ html.ed-on,html.ed-on body{overflow:hidden}
 #ed label.f>span{font-size:11px}
 #ed .status{font-size:11.5px}
 .ed-transport{justify-content:safe center}
+.ed-screen{position:relative}
+.ed-nocam{position:absolute;inset:0;z-index:3;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;text-align:center;padding:20px;
+  color:#c9c9d2;font-size:14px;background:repeating-linear-gradient(135deg,#17171b 0 14px,#1d1d22 14px 28px)}
+.ed-nocam[hidden]{display:none}
+.ed-nocam b{font-size:16px;color:#f0c27a}
+.ed-fb{position:absolute;inset:0;z-index:4}
+.ed-fb[hidden]{display:none}
+.ed-fb-box{position:absolute;border:2px solid #f2b55c;box-shadow:0 0 0 9999px rgba(0,0,0,.6);cursor:move}
+.ed-fb-h{position:absolute;right:-8px;bottom:-8px;width:16px;height:16px;background:#f2b55c;border:2px solid #1a1206;border-radius:4px;cursor:nwse-resize}
+.ed-fb-bar{position:absolute;top:8px;left:50%;transform:translateX(-50%);display:flex;gap:6px;align-items:center;background:rgba(20,20,24,.9);padding:5px 8px;border-radius:6px;color:#e6e6ea;font-size:12px}
+.ed-wheels{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:4px 0 8px}
+.ed-wheel{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10.5px;color:#a8a8b2;text-align:center}
+.ed-wheel canvas{width:100%;max-width:112px;height:auto;cursor:crosshair;border-radius:50%}

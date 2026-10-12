@@ -92,15 +92,17 @@ def write_wav(path, x: np.ndarray, rate: int = RATE):
 def make(folder: Path, video_s: float = 150.0, A: float = 3.217, B: float = 1.00004, hdr: bool = True,
          size: str = "360x640", face: str | None = None) -> dict:
     folder.mkdir(parents=True, exist_ok=True)
-    es = espeak_talk(video_s + 10)  # "true" talk, on the video's clock
-    speech, script = es if es else (speech_like(video_s + 10, seed=7), None)
-    cam = speech[: int(video_s * RATE)] * 0.5 + pink(int(video_s * RATE), 3) * 0.06
+    lead = A / B  # the recorder was running this long before the camera; the talk was already going
+    es = espeak_talk(video_s + lead + 10)  # "true" talk; video time t is at index (t + lead)
+    speech, script = es if es else (speech_like(video_s + lead + 10, seed=7), None)
+    L = int(lead * RATE)
+    cam = speech[L: L + int(video_s * RATE)] * 0.5 + pink(int(video_s * RATE), 3) * 0.06
     write_wav(folder / "cam.wav", cam)
     # recorder: started A seconds before the camera, clock B; it runs a bit past the video end
     rec_len = A + B * video_s - 8.0  # ends 8 s early (like the real project: audio shorter than video)
     ta = np.arange(int(rec_len * RATE)) / RATE
     tv = (ta - A) / B
-    rec = np.interp(tv, np.arange(len(speech)) / RATE, speech, left=0, right=0).astype(np.float32)
+    rec = np.interp(tv + lead, np.arange(len(speech)) / RATE, speech, left=0, right=0).astype(np.float32)
     rec = rec * 0.8 + pink(len(rec), 5) * 0.01
     write_wav(folder / "rec.wav", rec)
     video = folder / "Talk video.mov"

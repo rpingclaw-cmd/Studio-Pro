@@ -71,12 +71,30 @@ def _source(p: dict) -> tuple[Path, bool]:
 
 
 # ---------- step 1: synced, full length, 48 kHz mono ----------
+def span(p: dict, vdur: float) -> tuple[float, float]:
+    """'Keep the whole recording': how many seconds the recorder runs before the camera started (pre) and after
+    it stopped (post). The timeline then goes from -pre to vdur + post; the missing picture is filled."""
+    src, separate = _source(p)
+    sync = p.get("sync") or {}
+    if not (p.get("keep_all") and separate and sync):
+        return 0.0, 0.0
+    a, b = float(sync.get("a", 0)), float(sync.get("b", 1))
+    la = media.duration(ff.probe(src))
+    pre = max(0.0, a / b)
+    post = max(0.0, (la - a) / b - vdur)
+    return (round(pre, 3) if pre > 0.25 else 0.0), (round(post, 3) if post > 0.25 else 0.0)
+
+
 def make_synced(ctx: Ctx, p: dict, wd: Path, vdur: float) -> Path:
+    """The separate recording on the video's timeline (from -pre to vdur + post when the whole recording is kept)."""
     src, separate = _source(p)
     sync = p.get("sync") or {}
     a, b = (float(sync.get("a", 0)), float(sync.get("b", 1))) if separate else (0.0, 1.0)
+    pre, post = span(p, vdur)
+    a -= b * pre  # the file starts at video time -pre
+    vdur = pre + vdur + post
     out = wd / "synced_48k.wav"
-    key = key_of({"src": file_sig(src), "a": round(a, 6), "b": round(b, 9), "dur": round(vdur, 3), "v": 1})
+    key = key_of({"src": file_sig(src), "a": round(a, 6), "b": round(b, 9), "dur": round(vdur, 3), "v": 2})
     if step_done(out, key):
         return out
     info = ff.probe(src)
@@ -318,18 +336,20 @@ def polish_and_loudness(ctx: Ctx, cleaned: Path, bed: Path | None, out: Path, s:
 def ensure_clean(ctx: Ctx, p: dict) -> dict:
     video = media._need(p.get("video"), "video")
     vinfo = ff.probe(video)
-    vdur = media.duration(vinfo)
+    vdur0 = media.duration(vinfo)
     wd = media.work_dir(str(video))
     s = settings(p)
     out = wd / "clean_audio.wav"
     src, separate = _source(p)
-    key = key_of({"src": file_sig(src), "sync": p.get("sync") if separate else None, "s": s, "dur": round(vdur, 3),
-                  "v": 4})
+    pre, post = span(p, vdur0)
+    vdur = pre + vdur0 + post  # length of the cleaned sound (it starts at video time -pre)
+    key = key_of({"src": file_sig(src), "sync": p.get("sync") if separate else None, "s": s, "dur": round(vdur0, 3),
+                  "span": [pre, post], "v": 5})
     if step_done(out, key):
         return read_done(out).get("info", {}) | {"clean_audio": str(out), "cached": True}
     hardware.disk_check(wd, 0.4 + vdur / 3600 * 2.2, "cleaning the sound")
     ctx.stage(0.0, 0.15)
-    synced = make_synced(ctx, p, wd, vdur)
+    synced = make_synced(ctx, p, wd, vdur0)
     cleaned = synced
     if s["strength"] > 0:
         if not config.find_tool("deep-filter"):
@@ -344,7 +364,8 @@ def ensure_clean(ctx: Ctx, p: dict) -> dict:
     bed = make_bed(synced, cleaned, bed_path, s)
     ctx.stage(0.65, 1.0)
     lv = polish_and_loudness(ctx, cleaned, bed_path if bed.get("bed") else None, out, s, vdur, wd)
-    info = {**lv, "room_tone": bed, "strength": s["strength"], "atten_db": atten_db(s["strength"]) if s["strength"] else 0}
+    info = {**lv, "room_tone": bed, "strength": s["strength"], "atten_db": atten_db(s["strength"]) if s["strength"] else 0,
+            "start": -pre, "span": [pre, post]}
     mark_done(out, key, {"info": info})
     return info | {"clean_audio": str(out), "cached": False}
 

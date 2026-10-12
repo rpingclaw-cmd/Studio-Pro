@@ -37,12 +37,15 @@ async function engCheck(){
   finally{ENG.checking=false}
 }
 function engOff(msg){
-  ENG.on=false;if(ENG.es){ENG.es.close();ENG.es=null}engSay(msg);engShow();
+  ENG.on=false;clearInterval(ENG.poll);if(ENG.es){ENG.es.close();ENG.es=null}engSay(msg);engShow();
 }
 async function engConnected(hello){
   engSay(`Engine connected ✓ (version ${hello.version}) — checking this computer…`);engShow();
   ENG.es=new EventSource(`${ENG.url}/api/events?t=${encodeURIComponent(ENG.token)}`);
-  ENG.es.onmessage=e=>{try{ENG.jobs=JSON.parse(e.data)}catch(err){return}engJobsRender();engResolve()};
+  ENG.es.onmessage=e=>{try{ENG.jobs=JSON.parse(e.data)}catch(err){return}ENG.lastEv=Date.now();engJobsRender();engResolve()};
+  // safety net: if live updates do not arrive (some antivirus / network tools hold them back), ask for the job list every 2 s
+  ENG.lastEv=0;clearInterval(ENG.poll);ENG.poll=setInterval(async()=>{if(!ENG.on||Date.now()-ENG.lastEv<5000)return;
+    try{ENG.jobs=await engFetch('/api/jobs');engJobsRender();engResolve()}catch(e){}},2000);
   ENG.es.onerror=()=>{if(ENG.es&&ENG.es.readyState===2){engOff('The Studio Engine stopped — Studio Pro is restarting it…')}};
   try{ENG.hw=await engFetch('/api/hardware');engHwRender();engSay(`Engine connected ✓ — ${ENG.hw.best_encoder_name} for video, voice isolation ${ENG.hw.deep_filter?'ready':'not installed'}.`)}catch(e){engSay('Engine connected ✓')}
   if(STU.engPrep)engLoadPrepared(STU.engPrep,true).catch(()=>{});

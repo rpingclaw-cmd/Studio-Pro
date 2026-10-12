@@ -6,6 +6,7 @@ step that is already done with the same settings, so an interrupted job continue
 """
 import hashlib
 import json
+import math
 import os
 import queue
 import subprocess
@@ -33,6 +34,17 @@ def _plain(o):
     if isinstance(o, (set, tuple)):
         return list(o)
     return str(o)
+
+
+def _finite(o):
+    """JSON cannot carry inf / nan (e.g. the noise floor of digital silence is -inf dB): make them null."""
+    if isinstance(o, float):
+        return o if math.isfinite(o) else None
+    if isinstance(o, dict):
+        return {k: _finite(v) for k, v in o.items()}
+    if isinstance(o, list):
+        return [_finite(v) for v in o]
+    return o
 
 
 def key_of(obj) -> str:
@@ -208,7 +220,7 @@ class JobManager:
                 continue
             j = Job(d["type"], d.get("params") or {}, d["id"])
             j.state, j.progress, j.message = d["state"], d.get("progress", 0), d.get("message", "")
-            j.result, j.error, j.created = d.get("result"), d.get("error"), d.get("created", 0)
+            j.result, j.error, j.created = _finite(d.get("result")), d.get("error"), d.get("created", 0)
             j.started, j.finished = d.get("started"), d.get("finished")
             if j.state in ("queued", "running"):
                 j.state = "interrupted"
@@ -250,7 +262,7 @@ class JobManager:
                 pass
 
     def list(self) -> list[dict]:
-        return [j.public() for j in sorted(self.jobs.values(), key=lambda j: j.created, reverse=True)]
+        return [_finite(j.public()) for j in sorted(self.jobs.values(), key=lambda j: j.created, reverse=True)]
 
     def busy(self) -> bool:
         return any(j.state == "running" for j in self.jobs.values())
@@ -272,7 +284,7 @@ class JobManager:
         ctx = Ctx(self, job)
         try:
             with _KeepAwake():
-                job.result = json.loads(json.dumps(self.handlers[job.type](ctx, job.params), default=_plain))
+                job.result = _finite(json.loads(json.dumps(self.handlers[job.type](ctx, job.params), default=_plain)))
             job.state, job.progress = "done", 1.0
             job.message = (job.result or {}).get("message", "Done.") if isinstance(job.result, dict) else "Done."
         except Cancelled:

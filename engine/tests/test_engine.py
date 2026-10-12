@@ -252,3 +252,27 @@ def test_keep_whole_recording(eng, media, synced):
     assert "BL" in edl.splitlines()[3]  # first event: no camera picture
     xml = (final.parent / "Edited - timeline for DaVinci Resolve.fcpxml").read_text()
     assert "<gap " in xml
+
+
+def test_digital_silence_keeps_the_job_list_readable(eng, media, tmp_path):
+    """A recording with stretches of exact silence measures a noise floor of -inf dB. JSON cannot carry that,
+    and once such a job was in the list, the page never heard about any job again (seen on a real talk)."""
+    import json
+    from fastapi.testclient import TestClient
+    from studio_engine import ff
+    pad = tmp_path / "pad.wav"
+    subprocess.run([ff.tool("ffmpeg"), "-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-t", "8",
+                    "-c:a", "pcm_s16le", str(pad)], check=True)
+    r = run(eng, "report", {"video": media["video"], "audio": str(pad)})
+    assert r["audio"]["levels"]["noise_floor"] is None
+    m = eng.manager()
+    m.jobs["old-inf"] = type(m.jobs[next(iter(m.jobs))])("report", {}, "old-inf")  # an old job saved with -inf
+    m.jobs["old-inf"].result = {"levels": {"noise_floor": float("-inf")}}
+    try:
+        c = TestClient(eng.app, base_url="http://127.0.0.1:8765")
+        res = c.get("/api/jobs", headers={"x-engine-token": "test-token"})
+        assert res.status_code == 200
+        json.loads(res.text, parse_constant=lambda x: (_ for _ in ()).throw(ValueError(x)))  # strict JSON, as browsers
+        assert json.loads(json.dumps(m.list(), allow_nan=False))
+    finally:
+        del m.jobs["old-inf"]

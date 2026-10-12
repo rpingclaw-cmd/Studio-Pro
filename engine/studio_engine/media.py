@@ -1,5 +1,6 @@
 """Media report (like MediaInfo, in plain words) and Prepare (sound for sync + small preview video)."""
 import json
+import math
 import re
 import subprocess
 from pathlib import Path
@@ -104,9 +105,10 @@ def levels(ctx: Ctx, path, dur: float, label: str) -> dict:
     def num(pat):
         m = re.findall(pat, text)
         try:
-            return float(m[-1]) if m else None
+            v = float(m[-1]) if m else None
         except ValueError:
             return None
+        return v if v is None or math.isfinite(v) else None  # silence measures -inf dB: "no value"
     return {"lufs": num(r"I:\s+(-?[\d.]+|-inf) LUFS"), "true_peak": num(r"Peak:\s+(-?[\d.]+|-inf) dBFS"),
             "peak": num(r"Peak level dB:\s*(-?[\d.]+|-inf)"), "rms": num(r"RMS level dB:\s*(-?[\d.]+|-inf)"),
             "noise_floor": num(r"Noise floor dB:\s*(-?[\d.]+|-inf)"), "peak_count": num(r"Peak count:\s*([\d.]+)")}

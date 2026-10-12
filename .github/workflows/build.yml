@@ -1,7 +1,8 @@
 name: Build and test
 
 # Every push: engine tests (Linux + Windows), the Windows installer is built, installed and started
-# on a real Windows computer (self-test + screenshot). A tag like v0.2.0 publishes a GitHub Release.
+# on a real Windows computer (self-test + screenshot). Each passing build of main updates the GitHub Release
+# of the version in desktop/package.json.
 on:
   push:
     branches: [main]
@@ -79,10 +80,19 @@ jobs:
           name: Studio-Pro-Windows-installer
           path: desktop/dist/Studio-Pro-Setup-*.exe
           retention-days: 30
-      - name: Publish the release (tags only)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Version
+        id: ver
+        shell: bash
+        run: echo "v=$(node -p "require('./desktop/package.json').version")" >> "$GITHUB_OUTPUT"
+      # every tested build of main updates the release of its version (bump desktop/package.json for a new one)
+      - name: Publish the release
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.ver.outputs.v }}
+          target_commitish: ${{ github.sha }}
+          name: Studio Pro ${{ steps.ver.outputs.v }}
+          make_latest: true
           files: desktop/dist/Studio-Pro-Setup-*.exe
           body: |
             **Windows:** download `Studio-Pro-Setup-…exe` below, double-click it, and follow the steps.
